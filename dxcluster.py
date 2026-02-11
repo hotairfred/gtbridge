@@ -282,7 +282,7 @@ class DXClusterClient:
     """Async TCP client for DX cluster telnet connections."""
 
     def __init__(self, host: str, port: int, callsign: str,
-                 on_spot=None, name: str = None):
+                 on_spot=None, name: str = None, login_commands=None):
         """
         Args:
             host: Cluster server hostname
@@ -290,12 +290,14 @@ class DXClusterClient:
             callsign: Your amateur callsign for login
             on_spot: Async callback called with (DXSpot, cluster_name) for each spot
             name: Friendly name for this cluster connection
+            login_commands: List of commands to send after login (e.g. filters)
         """
         self.host = host
         self.port = port
         self.callsign = callsign.upper()
         self.on_spot = on_spot
         self.name = name or f"{host}:{port}"
+        self.login_commands = login_commands or []
         self._reader = None
         self._writer = None
         self._running = False
@@ -374,7 +376,12 @@ class DXClusterClient:
         await self._send_startup_commands()
 
     async def _send_startup_commands(self):
-        """Send post-login commands to pre-fill spot cache."""
+        """Send post-login commands (filters, sh/dx) to cluster."""
+        for cmd in self.login_commands:
+            self._writer.write((cmd + '\r\n').encode())
+            await self._writer.drain()
+            log.info("[%s] Sent: %s", self.name, cmd)
+            await asyncio.sleep(0.5)
         self._writer.write(b'sh/dx\r\n')
         await self._writer.drain()
         log.info("[%s] Sent sh/dx", self.name)

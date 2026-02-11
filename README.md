@@ -8,8 +8,12 @@ If you use GridTracker 2 and want to see DX cluster spots in the call roster wit
 
 - Connects to one or more DX cluster servers via telnet
 - Parses standard DX cluster spot format (including SDC-Connectors)
-- Creates a separate WSJT-X instance per band (e.g. GTB-20m, GTB-40m) so GridTracker can track spots on multiple bands simultaneously
+- Infers mode (CW/SSB/FT8/FT4) from frequency when the cluster doesn't provide one, using ITU region band plans and standard digital dial frequencies
+- Creates a separate WSJT-X instance per band and mode (e.g. 20m-CW, 40m-SSB) so GridTracker displays the correct mode for each spot
 - Caches spots and re-sends them every 15 seconds so they persist in GridTracker's call roster for a configurable duration (default 10 minutes)
+- Re-spots reset the TTL — active stations stay visible as long as they keep getting spotted
+- Sends `sh/dx` on connect to pre-fill the cache with recent spots
+- Supports per-cluster login commands for server-side filtering
 - Built-in telnet server re-broadcasts spots to Ham Radio Deluxe, Log4OM, or any DX cluster client (emulates DX Spider node with VE7CC CC11 support)
 - Filters by mode and/or band
 - Pure Python 3 — no external dependencies
@@ -34,7 +38,7 @@ If you use GridTracker 2 and want to see DX cluster spots in the call roster wit
 
 3. On the first run, a `gtbridge.json` config file is created. Edit it with your callsign and settings, then run again.
 
-4. In GridTracker 2, you should see spots appearing in the call roster. Each band shows up as a separate instance (GTB-20m, GTB-40m, etc.) in the General tab.
+4. In GridTracker 2, you should see spots appearing in the call roster. Each band+mode combo shows up as a separate instance (20m-CW, 40m-SSB, etc.) in the General tab.
 
 ## Configuration
 
@@ -44,17 +48,22 @@ Edit `gtbridge.json`:
 {
   "callsign": "W1AW",
   "grid": "FN31",
-  "client_id": "GTB",
   "udp_host": "192.168.1.205",
   "udp_port": 2237,
   "heartbeat_interval": 15,
   "cycle_interval": 15,
   "spot_ttl": 600,
+  "region": 2,
   "clusters": [
-    {"host": "192.168.1.205", "port": 7373, "name": "SDC"}
+    {
+      "host": "192.168.1.205",
+      "port": 7373,
+      "name": "SDC",
+      "login_commands": []
+    }
   ],
   "log_level": "INFO",
-  "mode_filter": [],
+  "mode_filter": ["CW", "SSB"],
   "band_filter": [],
   "telnet_server": true,
   "telnet_port": 7300
@@ -65,12 +74,12 @@ Edit `gtbridge.json`:
 |---------|-------------|---------|
 | `callsign` | Your amateur radio callsign (used for cluster login) | `N0CALL` |
 | `grid` | Your Maidenhead grid square (4 or 6 char) | `""` |
-| `client_id` | Prefix for WSJT-X instance names in GridTracker | `GTB` |
 | `udp_host` | IP address of the machine running GridTracker 2 | `127.0.0.1` |
 | `udp_port` | UDP port GridTracker is listening on | `2237` |
 | `heartbeat_interval` | Seconds between heartbeat messages | `15` |
 | `cycle_interval` | Seconds between spot send cycles | `15` |
-| `spot_ttl` | Seconds to keep re-sending a spot before it expires | `600` (10 min) |
+| `spot_ttl` | Seconds to keep re-sending a spot (resets on re-spot) | `600` (10 min) |
+| `region` | ITU region for band plan mode inference (1, 2, or 3) | `2` |
 | `clusters` | List of DX cluster servers to connect to | See below |
 | `log_level` | Logging verbosity: DEBUG, INFO, WARNING, ERROR | `INFO` |
 | `mode_filter` | Only forward these modes (empty = all) | `[]` |
@@ -78,14 +87,55 @@ Edit `gtbridge.json`:
 | `telnet_server` | Enable built-in telnet server for HRD/loggers | `false` |
 | `telnet_port` | TCP port for the telnet server | `7300` |
 
+### ITU Regions
+
+The `region` setting controls which band plan is used for mode inference:
+
+| Region | Coverage |
+|--------|----------|
+| 1 | Europe, Africa, Middle East |
+| 2 | Americas (ARRL band plan) |
+| 3 | Asia-Pacific |
+
 ### Cluster Server Config
 
-Each entry in `clusters` needs:
+Each entry in `clusters` supports:
 - `host` — hostname or IP address
 - `port` — TCP port number
 - `name` — friendly name (shown in logs)
+- `login_commands` — (optional) list of commands sent after login, before `sh/dx`
+
+#### Login Commands
+
+Use `login_commands` to send server-side filter commands to the cluster after login. This reduces bandwidth by having the cluster drop unwanted spots before sending them. The exact syntax depends on the cluster software (DX Spider, AR-Cluster, etc.).
+
+DX Spider examples:
+```json
+"login_commands": [
+    "reject/spot on hf/ft8",
+    "reject/spot on hf/ft4",
+    "set/nobeacon"
+]
+```
+
+Commands are sent in order with a short pause between each. The `sh/dx` command is always sent last to pre-fill the spot cache.
+
+### Mode Inference
+
+When a DX cluster spot arrives without a mode tag, GTBridge infers the mode from the frequency:
+
+1. **FT4/FT8 detection** — checks if the frequency falls within 3 kHz of a standard FT4 or FT8 dial frequency (e.g. 14074 kHz for 20m FT8, 7047.5 kHz for 40m FT4)
+2. **Band plan lookup** — checks ITU region band plan for CW and SSB sub-bands (e.g. 14000-14070 kHz is CW in Region 2)
+3. **Gray area default** — frequencies between CW and SSB sub-bands (e.g. 7070-7125 kHz on 40m) default to SSB, since the operator can identify the actual mode on their radio
+
+If the cluster spot already includes a mode tag (e.g. "CW" or "FT8" in the comment), that mode is used as-is.
 
 ### Filter Examples
+
+Only CW and SSB spots (filters out FT8, FT4, RTTY, etc.):
+```json
+"mode_filter": ["CW", "SSB"]
+```
 
 Only FT8 and CW spots:
 ```json
@@ -235,12 +285,15 @@ DX Cluster(s) --telnet--> dxcluster.py --spots--> gtbridge.py
 
 1. Connects to configured DX cluster server(s) via TCP telnet
 2. Logs in with your callsign
-3. Parses incoming DX spot lines (callsign, frequency, mode, SNR)
-4. Groups spots by band — each band gets its own WSJT-X "instance"
-5. Every 15 seconds, sends all cached spots as WSJT-X Decode messages via UDP
-6. GridTracker 2 receives these and displays them in the call roster
-7. Spots are re-sent each cycle until they age out (default 10 minutes)
-8. If the telnet server is enabled, each spot is also broadcast in real time to connected clients (HRD, Log4OM, etc.)
+3. Sends any configured `login_commands` (server-side filters, etc.)
+4. Sends `sh/dx` to get recent spots and pre-fill the cache
+5. Parses incoming DX spot lines (callsign, frequency, mode, SNR, grid, spotter)
+6. Infers mode from frequency when not provided by the cluster
+7. Groups spots by band and mode — each combo gets its own WSJT-X "instance" (e.g. 20m-CW, 40m-SSB)
+8. Every 15 seconds, sends all cached spots as WSJT-X Decode messages via UDP
+9. GridTracker 2 receives these and displays them in the call roster with the correct mode
+10. Spots are re-sent each cycle until they age out (default 10 minutes); re-spots reset the timer
+11. If the telnet server is enabled, each spot is also broadcast in real time to connected clients (HRD, Log4OM, etc.)
 
 ## Troubleshooting
 
@@ -258,6 +311,10 @@ DX Cluster(s) --telnet--> dxcluster.py --spots--> gtbridge.py
 **Spots appear but don't persist:**
 - Increase `spot_ttl` in config (default 600 seconds)
 - Check GridTracker's call roster age-out setting
+
+**Spots show wrong mode:**
+- Check `region` is set correctly for your location (1=Europe, 2=Americas, 3=Asia-Pacific)
+- Mode inference only applies when the cluster doesn't tag the spot — if the cluster says "CW", that's used as-is
 
 **HRD connects but spot window is empty:**
 - Make sure `telnet_server` is `true` in gtbridge.json

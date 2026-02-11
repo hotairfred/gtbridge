@@ -113,7 +113,7 @@ class GTBridge:
 
     def _instance_client_id(self, band: str, mode: str) -> str:
         """Return the WSJT-X client_id for a band+mode instance."""
-        return f"{self.client_id}-{band}-{mode}"
+        return f"{band}-{mode}"
 
     def _send_udp(self, data: bytes):
         """Send a UDP packet to GridTracker."""
@@ -324,6 +324,7 @@ class GTBridge:
                 callsign=self.callsign,
                 on_spot=self._on_spot,
                 name=cluster_cfg.get('name', cluster_cfg['host']),
+                login_commands=cluster_cfg.get('login_commands', []),
             )
             self._cluster_clients.append(client)
             tasks.append(asyncio.create_task(client.connect()))
