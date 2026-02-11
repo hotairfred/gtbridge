@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "log_level": "INFO",
     "mode_filter": [],
     "band_filter": [],
+    "region": 2,
     "telnet_server": False,
     "telnet_port": 7300,
 }
@@ -65,9 +66,9 @@ MODE_CHAR = {
 class GTBridge:
     """Main bridge: coordinates cluster clients and UDP output.
 
-    Each amateur band gets its own WSJT-X client_id (e.g. GTBRIDGE-20m)
-    so GridTracker sees them as separate instances, each on a stable
-    frequency. Spots are buffered and flushed every 15 seconds per band.
+    Each band+mode combo gets its own WSJT-X client_id (e.g. GTB-20m-CW)
+    so GridTracker sees them as separate instances with the correct mode.
+    Spots are buffered and flushed every 15 seconds.
     """
 
     # Default dial frequencies per band (common FT8 frequencies)
@@ -98,6 +99,7 @@ class GTBridge:
         self.spot_ttl = config.get('spot_ttl', 600)  # seconds to keep re-sending
         self.mode_filter = set(m.upper() for m in config.get('mode_filter', []))
         self.band_filter = set(b.lower() for b in config.get('band_filter', []))
+        self.region = config.get('region', 2)
         self._sock = None
         self._telnet = None
         self._cluster_clients = []
@@ -106,12 +108,12 @@ class GTBridge:
         # Spot cache: keyed by (band, dx_call) -> {spot, cluster_name, first_seen, last_updated}
         self._spot_cache = {}
         self._cache_lock = asyncio.Lock()
-        # Track which bands we've seen (for heartbeats)
-        self._active_bands = set()
+        # Track which (band, mode) combos we've seen (for heartbeats)
+        self._active_instances = set()
 
-    def _band_client_id(self, band: str) -> str:
-        """Return the WSJT-X client_id for a given band."""
-        return f"{self.client_id}-{band}"
+    def _instance_client_id(self, band: str, mode: str) -> str:
+        """Return the WSJT-X client_id for a band+mode instance."""
+        return f"{self.client_id}-{band}-{mode}"
 
     def _send_udp(self, data: bytes):
         """Send a UDP packet to GridTracker."""
@@ -122,8 +124,14 @@ class GTBridge:
 
     async def _on_spot(self, spot: dxcluster.DXSpot, cluster_name: str):
         """Callback when a DX spot is received — adds/updates cache."""
+        # Infer mode from frequency band plan if not tagged
+        if not spot.mode:
+            spot.mode = dxcluster.infer_mode(spot.freq_khz, self.region)
+
         # Apply mode filter
         if self.mode_filter and (not spot.mode or spot.mode.upper() not in self.mode_filter):
+            log.info("[%s] Filtered: %s  %.1f kHz  mode=%s",
+                     cluster_name, spot.dx_call, spot.freq_khz, spot.mode or 'None')
             return
 
         band = dxcluster.freq_to_band(spot.freq_khz)
@@ -144,8 +152,8 @@ class GTBridge:
                 self._spot_cache[key]['spot'] = spot
                 self._spot_cache[key]['cluster_name'] = cluster_name
                 self._spot_cache[key]['last_updated'] = now
-                log.info("[%s] Updated: %s  %.1f kHz  %s  [%s]",
-                         cluster_name, spot.dx_call, spot.freq_khz, spot.mode or '??', band)
+                log.info("[%s] Updated: %s  %.1f kHz  %s  [%s]  by %s",
+                         cluster_name, spot.dx_call, spot.freq_khz, spot.mode or '??', band, spot.spotter)
             else:
                 # New spot
                 self._spot_cache[key] = {
@@ -155,24 +163,25 @@ class GTBridge:
                     'last_updated': now,
                 }
                 self._spot_count += 1
-                log.info("[%s] New: %s  %.1f kHz  %s  [%s]",
-                         cluster_name, spot.dx_call, spot.freq_khz, spot.mode or '??', band)
+                log.info("[%s] New: %s  %.1f kHz  %s  [%s]  by %s",
+                         cluster_name, spot.dx_call, spot.freq_khz, spot.mode or '??', band, spot.spotter)
 
             # Broadcast to telnet clients in real time
             if self._telnet:
                 self._telnet.broadcast_spot(spot)
 
-            # Register this band (sends initial heartbeat+status on first spot)
-            if band not in self._active_bands:
-                self._active_bands.add(band)
-                cid = self._band_client_id(band)
+            # Register this band+mode (sends initial heartbeat+status on first spot)
+            inst = (band, spot.mode)
+            if inst not in self._active_instances:
+                self._active_instances.add(inst)
+                cid = self._instance_client_id(band, spot.mode)
                 dial = self.BAND_DIAL_FREQ.get(band, spot.freq_hz)
                 self._send_udp(wsjtx_udp.heartbeat(client_id=cid))
                 self._send_udp(wsjtx_udp.status(
-                    client_id=cid, dial_freq=dial, mode='FT8',
+                    client_id=cid, dial_freq=dial, mode=spot.mode,
                     de_call=self.callsign, de_grid=self.grid, decoding=True,
                 ))
-                log.info("New band instance: %s (dial=%d Hz)", cid, dial)
+                log.info("New instance: %s (dial=%d Hz)", cid, dial)
 
     async def _flush_cycle(self):
         """Send all cached (non-expired) spots to GridTracker.
@@ -183,20 +192,21 @@ class GTBridge:
         """
         now = time.time()
 
-        # Expire old spots and group active ones by band
-        by_band = {}  # band -> list of (spot, cluster_name)
+        # Expire old spots and group active ones by (band, mode)
+        by_inst = {}  # (band, mode) -> list of (spot, cluster_name)
         expired_keys = []
 
         async with self._cache_lock:
             for key, entry in self._spot_cache.items():
-                age = now - entry['first_seen']
+                age = now - entry['last_updated']
                 if age > self.spot_ttl:
                     expired_keys.append(key)
                 else:
-                    band = key[0]
-                    if band not in by_band:
-                        by_band[band] = []
-                    by_band[band].append((entry['spot'], entry['cluster_name']))
+                    spot = entry['spot']
+                    inst = (key[0], spot.mode or 'SSB')
+                    if inst not in by_inst:
+                        by_inst[inst] = []
+                    by_inst[inst].append((spot, entry['cluster_name']))
 
             for key in expired_keys:
                 del self._spot_cache[key]
@@ -207,18 +217,17 @@ class GTBridge:
         time_ms = wsjtx_udp.current_time_ms()
         total_sent = 0
 
-        for band, spots in by_band.items():
-            cid = self._band_client_id(band)
+        for (band, mode), spots in by_inst.items():
+            cid = self._instance_client_id(band, mode)
             dial = self.BAND_DIAL_FREQ.get(band, spots[0][0].freq_hz)
 
-            # Send Status for this band's instance
-            mode = spots[0][0].mode or 'FT8'
+            # Send Status for this band+mode instance
             self._send_udp(wsjtx_udp.status(
                 client_id=cid, dial_freq=dial, mode=mode,
                 de_call=self.callsign, de_grid=self.grid, decoding=True,
             ))
 
-            # Re-send all cached decodes for this band
+            # Re-send all cached decodes for this instance
             for spot, cluster_name in spots:
                 if spot.grid:
                     msg_text = f"CQ {spot.dx_call} {spot.grid}"
@@ -239,9 +248,9 @@ class GTBridge:
 
         self._send_count += total_sent
         if total_sent:
-            log.info("Cycle: sent %d spots across %d bands (%d cached, %d expired)",
-                     total_sent, len(by_band),
-                     sum(len(s) for s in by_band.values()), len(expired_keys))
+            log.info("Cycle: sent %d spots across %d instances (%d cached, %d expired)",
+                     total_sent, len(by_inst),
+                     sum(len(s) for s in by_inst.values()), len(expired_keys))
 
     async def _cycle_loop(self):
         """Every 15 seconds, flush buffered spots to GridTracker."""
@@ -250,22 +259,23 @@ class GTBridge:
             await self._flush_cycle()
 
     async def _heartbeat_loop(self):
-        """Send periodic heartbeat for every active band instance."""
+        """Send periodic heartbeat for every active band+mode instance."""
         while True:
-            for band in list(self._active_bands):
-                cid = self._band_client_id(band)
+            for band, mode in list(self._active_instances):
+                cid = self._instance_client_id(band, mode)
                 self._send_udp(wsjtx_udp.heartbeat(client_id=cid))
-            log.debug("Heartbeats sent for %d bands (spots: %d)",
-                      len(self._active_bands), self._spot_count)
+            log.debug("Heartbeats sent for %d instances (spots: %d)",
+                      len(self._active_instances), self._spot_count)
             await asyncio.sleep(self.heartbeat_interval)
 
     async def _stats_loop(self):
         """Log periodic stats."""
         while True:
             await asyncio.sleep(60)
-            log.info("Stats: %d unique spots, %d in cache, %d sends, bands: %s",
+            instances = ', '.join(f"{b}-{m}" for b, m in sorted(self._active_instances))
+            log.info("Stats: %d unique spots, %d in cache, %d sends, instances: %s",
                      self._spot_count, len(self._spot_cache),
-                     self._send_count, ', '.join(sorted(self._active_bands)))
+                     self._send_count, instances)
 
     async def run(self):
         """Main entry point - run the bridge."""

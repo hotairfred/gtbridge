@@ -37,8 +37,10 @@ class TelnetServer:
 
     async def start(self):
         """Start listening for connections."""
+        import socket
         self._server = await asyncio.start_server(
-            self._handle_client, self.host, self.port
+            self._handle_client, self.host, self.port,
+            reuse_address=True,
         )
         log.info("Telnet server listening on %s:%d (node %s)",
                  self.host, self.port, self.node_call)

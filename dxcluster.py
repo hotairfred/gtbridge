@@ -106,6 +106,156 @@ def parse_spot(line: str) -> Optional[DXSpot]:
     )
 
 
+# Standard FT8 dial frequencies (kHz) — signals occupy dial to dial+3 kHz
+_FT8_DIAL = [1840, 3573, 5357, 7074, 10136, 14074, 18100, 21074, 24915, 28074, 50313]
+
+# Standard FT4 dial frequencies (kHz) — signals occupy dial to dial+3 kHz
+_FT4_DIAL = [3575.5, 7047.5, 10140, 14080, 18104, 21140, 24919, 28180, 50318]
+
+# Approximate audio bandwidth for FT8/FT4 (kHz)
+_DIGI_BW = 3.0
+
+# Band plan sub-band allocations per ITU region.
+# Each entry: (low_khz, high_khz, mode) — only CW and SSB ranges.
+# FT8/FT4 windows are checked first (see infer_mode), so band plan
+# boundaries don't need to carve around every digital sub-band.
+_BAND_PLAN = {
+    1: [  # Region 1: Europe, Africa, Middle East (IARU R1)
+        # 160m
+        (1810, 1838, 'CW'),
+        (1843, 2000, 'SSB'),
+        # 80m
+        (3500, 3570, 'CW'),
+        (3600, 3800, 'SSB'),
+        # 60m (channelized USB)
+        (5330, 5410, 'SSB'),
+        # 40m
+        (7000, 7040, 'CW'),
+        (7060, 7200, 'SSB'),
+        # 30m (CW/digital only, no phone)
+        (10100, 10130, 'CW'),
+        # 20m
+        (14000, 14070, 'CW'),
+        (14112, 14350, 'SSB'),
+        # 17m
+        (18068, 18095, 'CW'),
+        (18111, 18168, 'SSB'),
+        # 15m
+        (21000, 21070, 'CW'),
+        (21151, 21450, 'SSB'),
+        # 12m
+        (24890, 24915, 'CW'),
+        (24931, 24990, 'SSB'),
+        # 10m
+        (28000, 28070, 'CW'),
+        (28300, 29700, 'SSB'),
+        # 6m
+        (50000, 50100, 'CW'),
+        (50400, 52000, 'SSB'),
+    ],
+    2: [  # Region 2: Americas (ARRL band plan)
+        # 160m
+        (1800, 1840, 'CW'),
+        (1850, 2000, 'SSB'),
+        # 80m
+        (3500, 3570, 'CW'),
+        (3600, 4000, 'SSB'),
+        # 60m (channelized USB)
+        (5330, 5410, 'SSB'),
+        # 40m
+        (7000, 7070, 'CW'),
+        (7125, 7300, 'SSB'),
+        # 30m (CW/digital only, no phone)
+        (10100, 10130, 'CW'),
+        # 20m
+        (14000, 14070, 'CW'),
+        (14150, 14350, 'SSB'),
+        # 17m
+        (18068, 18100, 'CW'),
+        (18110, 18168, 'SSB'),
+        # 15m
+        (21000, 21070, 'CW'),
+        (21150, 21450, 'SSB'),
+        # 12m
+        (24890, 24920, 'CW'),
+        (24930, 24990, 'SSB'),
+        # 10m
+        (28000, 28070, 'CW'),
+        (28300, 29700, 'SSB'),
+        # 6m
+        (50000, 50100, 'CW'),
+        (50400, 54000, 'SSB'),
+    ],
+    3: [  # Region 3: Asia-Pacific (IARU R3)
+        # 160m
+        (1800, 1838, 'CW'),
+        (1843, 2000, 'SSB'),
+        # 80m
+        (3500, 3570, 'CW'),
+        (3600, 3900, 'SSB'),
+        # 60m (channelized USB)
+        (5330, 5410, 'SSB'),
+        # 40m
+        (7000, 7040, 'CW'),
+        (7060, 7300, 'SSB'),
+        # 30m (CW/digital only, no phone)
+        (10100, 10130, 'CW'),
+        # 20m
+        (14000, 14070, 'CW'),
+        (14112, 14350, 'SSB'),
+        # 17m
+        (18068, 18095, 'CW'),
+        (18110, 18168, 'SSB'),
+        # 15m
+        (21000, 21070, 'CW'),
+        (21150, 21450, 'SSB'),
+        # 12m
+        (24890, 24920, 'CW'),
+        (24930, 24990, 'SSB'),
+        # 10m
+        (28000, 28070, 'CW'),
+        (28300, 29700, 'SSB'),
+        # 6m
+        (50000, 50100, 'CW'),
+        (50400, 54000, 'SSB'),
+    ],
+}
+
+
+def infer_mode(freq_khz: float, region: int = 2) -> Optional[str]:
+    """Infer mode from frequency using standard digital windows + band plan.
+
+    Checks FT8/FT4 windows first (dial to dial+3 kHz), then falls through
+    to ITU region band plan for CW/SSB. Frequencies in the gray area
+    between CW and SSB sub-bands (e.g. 7070-7125 on 40m) default to SSB
+    so untagged spots still pass through the mode filter — the operator
+    can identify the actual mode from the spot on their radio.
+
+    Only called when the cluster spot has no mode tag. If the spot already
+    specifies a mode, that mode is used as-is.
+
+    Returns 'FT8', 'FT4', 'CW', 'SSB', or None (not in any amateur band).
+    """
+    # Check FT4 first (narrower windows, overlaps FT8 on 80m)
+    for dial in _FT4_DIAL:
+        if dial <= freq_khz <= dial + _DIGI_BW:
+            return 'FT4'
+    # Check FT8 windows
+    for dial in _FT8_DIAL:
+        if dial <= freq_khz <= dial + _DIGI_BW:
+            return 'FT8'
+    # Fall through to band plan for CW/SSB
+    plan = _BAND_PLAN.get(region, _BAND_PLAN[2])
+    for low, high, mode in plan:
+        if low <= freq_khz <= high:
+            return mode
+    # Gray area: within an amateur band but between defined CW/SSB
+    # sub-bands (e.g. digital segments). Default to SSB.
+    if freq_to_band(freq_khz):
+        return 'SSB'
+    return None
+
+
 def freq_to_band(freq_khz: float) -> Optional[str]:
     """Map frequency in kHz to amateur band name."""
     bands = [
@@ -212,6 +362,7 @@ class DXClusterClient:
                 login_sent = True
                 # Read a bit more to clear the post-login banner
                 await asyncio.sleep(1)
+                await self._send_startup_commands()
                 return
 
         # If no prompt was detected, try sending callsign anyway
@@ -220,6 +371,13 @@ class DXClusterClient:
             await self._writer.drain()
             log.info("[%s] Sent callsign (no prompt detected): %s", self.name, self.callsign)
             await asyncio.sleep(1)
+        await self._send_startup_commands()
+
+    async def _send_startup_commands(self):
+        """Send post-login commands to pre-fill spot cache."""
+        self._writer.write(b'sh/dx\r\n')
+        await self._writer.drain()
+        log.info("[%s] Sent sh/dx", self.name)
 
     async def _read_loop(self):
         """Read lines from the cluster and parse spots."""
