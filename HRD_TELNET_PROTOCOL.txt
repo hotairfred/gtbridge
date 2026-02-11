@@ -1,0 +1,193 @@
+HRD (Ham Radio Deluxe) Telnet DX Cluster Protocol Notes
+========================================================
+
+Discovered 2026-02-11 while implementing a telnet spot server
+for GTBridge. These notes document what HRD expects from a DX
+cluster telnet connection, based on observing HRD's actual
+behavior when connecting to our server.
+
+These findings may be useful for developers implementing DX
+cluster servers or proxies that need to work with HRD.
+
+
+1. LOGIN SEQUENCE
+-----------------
+
+HRD connects via TCP and expects a standard login prompt.
+It looks for keywords like "login" or "call" in the prompt
+text, then sends its callsign (with SSID, e.g. WF8Z-18).
+
+What HRD expects to see:
+
+    login: Please enter your call:
+
+What HRD sends:
+
+    WF8Z-18
+
+What the server should respond with:
+
+    Hello WF8Z-18, this is NODECALL running DX Spider
+    WF8Z-18 de NODECALL >
+
+
+2. INIT COMMAND SEQUENCE
+------------------------
+
+Immediately after login, HRD sends a burst of DX Spider
+commands. The full sequence observed:
+
+    set/name Fred
+    set/qth Middletown
+    set/qra EM79SM
+    set/homenode WA9PIE-2
+    unset/echo
+    set/prompt %M>
+    set/ve7cc              <-- CRITICAL (see section 3)
+    sh/filter
+    set/wcy
+    set/wwv
+    set/page 9999
+    echo #init#            <-- state machine marker
+    echo #sh/dx#           <-- state machine marker
+    sh/mydx 450
+    echo #announce#        <-- state machine marker
+    sh/ann 100
+    echo #wcy#             <-- state machine marker
+    sh/wcy 10
+    echo #wwv#             <-- state machine marker
+    sh/wwv 0
+    echo #ready#           <-- CRITICAL (see section 4)
+
+Each command expects a prompt response. After set/prompt %M>,
+the prompt format should change to just "NODECALL>" (replacing
+%M with the node's callsign).
+
+
+3. VE7CC CC11 FORMAT IS REQUIRED
+---------------------------------
+
+This was the key discovery. HRD sends "set/ve7cc" to enable
+VE7CC CC Cluster protocol extensions. Once this is enabled,
+HRD's spot window ONLY parses CC11-formatted spot lines.
+
+Standard DX Spider format DOES NOT WORK after set/ve7cc:
+
+    DX de W3LPL:    14074.0  JA1ABC       FT8 -15dB       1234Z
+
+HRD's spot window ignores these entirely. They appear in the
+raw text/terminal view but never populate the spot list.
+
+CC11 format that HRD requires:
+
+    CC11^14074.0^JA1ABC^11-Feb-2026^1234Z^FT8 -15dB CQ^W3LPL^FN20^^0^\a
+
+Field breakdown (^ delimited):
+    CC11            Message type identifier
+    14074.0         Frequency in kHz
+    JA1ABC          DX station callsign
+    11-Feb-2026     Date (DD-Mon-YYYY)
+    1234Z           Time UTC (HHMM + Z)
+    FT8 -15dB CQ   Comment/info field
+    W3LPL           Spotter callsign
+    FN20            Spotter grid locator (may be empty)
+    (empty)         Origin node (may be empty)
+    0               Flag (0=normal)
+    (trailing ^)
+
+The line must end with \a (BEL, 0x07) followed by \r\n.
+
+IMPLICATION: Any DX cluster proxy or spot server that wants
+HRD compatibility must either:
+  a) Implement CC11 format when set/ve7cc is received, OR
+  b) Respond to set/ve7cc with an error so HRD falls back
+     to standard format parsing (UNTESTED — HRD may not
+     fall back gracefully)
+
+In our testing, option (a) was the only approach that worked.
+
+
+4. ECHO MARKERS ARE STATE MACHINE TRIGGERS
+------------------------------------------
+
+HRD uses "echo" commands as delimiters between sections of
+its initialization. The echo command on DX Spider simply
+echoes back whatever text follows it.
+
+    Client sends:    echo #ready#
+    Server responds: #ready#
+                     NODECALL>
+
+HRD's state machine progression:
+
+    #init#      -> initialization phase begins
+    #sh/dx#     -> spot history section begins
+                   (sh/mydx 450 follows)
+    #announce#  -> announcement section begins
+                   (sh/ann 100 follows)
+    #wcy#       -> WCY data section
+    #wwv#       -> WWV data section
+    #ready#     -> ALL INITIALIZATION COMPLETE
+
+THE #ready# MARKER IS CRITICAL. HRD will not begin processing
+live spot data until it sees #ready# echoed back. If the server
+does not echo this marker, HRD remains in its init state
+indefinitely and the spot window stays empty.
+
+
+5. NODE IDENTIFICATION
+----------------------
+
+HRD's DX cluster configuration stores a node callsign. The
+server's node name should look like a valid amateur callsign
+with SSID (e.g. WF8Z-2, not "GTBridge" or "MyServer").
+
+The node call appears in:
+  - The welcome message ("this is NODECALL running DX Spider")
+  - The prompt ("CALL de NODECALL >")
+  - After set/prompt %M>, the %M is replaced with the node call
+
+Using a non-callsign string as the node name did not prevent
+HRD from connecting, but may affect how HRD categorizes or
+displays the connection.
+
+
+6. SUMMARY OF REQUIREMENTS
+---------------------------
+
+For a telnet server to work with HRD's DX spot window:
+
+  [ ] Login prompt containing "login" or "call"
+  [ ] DX Spider-style welcome with node callsign
+  [ ] Handle set/prompt %M> (change prompt format)
+  [ ] Accept set/ve7cc and switch to CC11 spot format
+  [ ] Echo back all "echo" command arguments verbatim
+  [ ] Send #ready# echo to complete init state machine
+  [ ] Format spots as CC11^...^...^\a\r\n
+  [ ] Respond to all commands with a prompt line
+  [ ] Node name should be a callsign-style identifier
+
+
+7. WHAT DOES NOT WORK
+----------------------
+
+The following were tried and did not result in spots appearing
+in HRD's spot window:
+
+  - Standard "DX de ..." format with correct DX Spider column
+    positions — ignored by HRD after set/ve7cc
+
+  - Adding BEL (\a) to standard format spot lines — still
+    ignored
+
+  - Declining set/ve7cc ("command not found") — HRD did not
+    fall back to parsing standard format spots
+
+  - Using a non-callsign node name (e.g. "GTBridge") — HRD
+    connected but did not parse spots (unclear if this was
+    the sole cause, as it was changed alongside other fixes)
+
+
+Tested with: Ham Radio Deluxe, connecting to GTBridge
+             telnet server on port 7300
+Date:        2026-02-11

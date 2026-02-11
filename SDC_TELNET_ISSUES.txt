@@ -1,0 +1,75 @@
+SDC-Connectors Telnet Server - Compatibility Issues
+=====================================================
+Observed: 2026-02-10
+SDC Telnet Server on port 7373
+Tested from Linux (Python telnet client)
+
+SUMMARY
+-------
+The SDC telnet server's DX cluster output has a few issues that cause
+compatibility problems with standard DX cluster client software (e.g.
+Ham Radio Deluxe, logging programs, and other cluster aggregators).
+
+ISSUE 1: BEL control characters (0x07) appended to spot lines
+--------------------------------------------------------------
+Spot lines have \x07 (ASCII BEL) characters appended at the end:
+
+  Raw bytes received:
+  b'DX de KM7MM:     18101.3  JE6KYA                                      2313Z\x07\x07'
+
+  The two \x07 bytes at the end are non-standard. Standard DX cluster
+  servers terminate lines with \r\n only. The BEL characters will cause
+  parsers that expect clean text to fail or produce garbled output.
+
+  Fix: Do not append BEL (0x07) characters to spot lines sent to telnet
+  clients.
+
+ISSUE 2: Skimmer spotter name format
+-------------------------------------
+Internal skimmer spots use spotter names like "SKM1-#":
+
+  DX de SKM1-#:   455083.8  XX9XXX         17 dB  30 WPM  CQ            1035Z
+
+  The "#" character in the spotter callsign field is non-standard for
+  DX cluster spot format. Many DX cluster parsers expect the spotter
+  field to contain only callsign-valid characters (letters, digits,
+  forward slash).
+
+  This may cause strict parsers to reject these lines entirely.
+
+  Suggestion: Use a callsign-like format for skimmer spotters, e.g.
+  "SKM1-1" instead of "SKM1-#".
+
+ISSUE 3: Test/internal spots visible to telnet clients
+------------------------------------------------------
+Upon connection, we received what appears to be an internal test spot:
+
+  DX de SKM1-#:   455083.8  XX9XXX         17 dB  30 WPM  CQ            1035Z
+
+  - XX9XXX is not a real callsign (test/placeholder)
+  - 455083.8 kHz (455 MHz) is not a standard amateur frequency
+  - This appears to be a test/calibration spot from the skimmer
+
+  If these are internal diagnostics, they should not be sent to external
+  telnet clients as they will appear as invalid spots.
+
+COMMUNITY REPORTS
+-----------------
+Other users have reported similar compatibility issues:
+- Ham Radio Deluxe cannot display spots from SDC telnet server
+- MacLoggerDX has connection/parsing issues
+- Common workaround is using Node-Red to reformat the data
+
+WHAT WORKS
+----------
+The overall telnet protocol implementation is correct:
+- TCP connection on configured port works fine
+- Login prompt ("Please enter your callsign:") is standard
+- Post-login prompt ("WF8Z de SDC Server >") is standard
+- Spot line format is mostly standard "DX de" format
+- The issues above are relatively minor and easy to fix
+
+WORKAROUND
+----------
+We wrote a bridge (gtbridge) that strips control characters and handles
+the non-standard fields, successfully forwarding SDC spots to GridTracker 2.
