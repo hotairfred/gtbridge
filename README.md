@@ -14,6 +14,7 @@ If you use GridTracker 2 and want to see DX cluster spots in the call roster wit
 - Re-spots reset the TTL — active stations stay visible as long as they keep getting spotted
 - Sends `sh/dx` on connect to pre-fill the cache with recent spots
 - Supports per-cluster login commands for server-side filtering
+- QRZ XML grid lookups — automatically populates grid squares for spotted callsigns (requires QRZ XML subscription)
 - Built-in telnet server re-broadcasts spots to Ham Radio Deluxe, Log4OM, or any DX cluster client (emulates DX Spider node with VE7CC CC11 support)
 - Filters by mode and/or band
 - Pure Python 3 — no external dependencies
@@ -30,6 +31,7 @@ If you use GridTracker 2 and want to see DX cluster spots in the call roster wit
    - `dxcluster.py`
    - `wsjtx_udp.py`
    - `telnet_server.py`
+   - `qrz.py` (optional — only needed for QRZ grid lookups)
 
 2. Run it:
    ```
@@ -190,7 +192,7 @@ This sets GTBridge up to start automatically at boot and restart if it crashes.
 1. Copy the GTBridge files somewhere permanent:
    ```bash
    sudo mkdir -p /opt/gtbridge
-   sudo cp gtbridge.py dxcluster.py wsjtx_udp.py telnet_server.py gtbridge.json /opt/gtbridge/
+   sudo cp gtbridge.py dxcluster.py wsjtx_udp.py telnet_server.py qrz.py gtbridge.json /opt/gtbridge/
    ```
 
 2. Create a system user (optional, runs the service without a login shell):
@@ -265,6 +267,60 @@ GTBridge includes a built-in telnet server that emulates a DX Spider cluster nod
 
 The server identifies itself as `YOURCALL-2` (e.g. `WF8Z-2`) and supports HRD's VE7CC CC11 spot format, which HRD enables automatically via `set/ve7cc`. See `HRD_TELNET_PROTOCOL.txt` for detailed protocol notes.
 
+## QRZ Grid Lookups
+
+GTBridge can look up grid squares for spotted callsigns via the QRZ.com XML API. This populates the grid field in GridTracker's call roster, so you can see where stations are located. Requires a QRZ XML Logbook Data subscription.
+
+### Setup
+
+1. Create a `secrets.json` file in the same directory as `gtbridge.py`:
+   ```json
+   {
+     "qrz_user": "your_callsign",
+     "qrz_password": "your_qrz_password"
+   }
+   ```
+
+2. That's it — GTBridge will detect the credentials and enable QRZ lookups automatically. You'll see `QRZ XML lookup enabled` in the log.
+
+### Password Obfuscation
+
+If you'd rather not store the password in plain text, you can base64-encode it:
+
+```bash
+echo -n 'your_password' | base64
+```
+
+Then use the `b64:` prefix in `secrets.json`:
+```json
+{
+  "qrz_user": "your_callsign",
+  "qrz_password": "b64:eW91cl9wYXNzd29yZA=="
+}
+```
+
+You can also use environment variables instead of `secrets.json`:
+```bash
+export QRZ_USER=your_callsign
+export QRZ_PASSWORD=your_password
+python3 gtbridge.py
+```
+
+### How It Works
+
+- When a new callsign is spotted, GTBridge checks its local cache first
+- On a cache miss, it queries the QRZ XML API for the grid square
+- Results are cached to disk (`qrz_cache.json`) to avoid redundant lookups
+- If a cluster spot already includes a grid, that grid is used as-is and saved to the cache
+- Lookups are serialized (one at a time) to avoid hammering the QRZ API
+- Transient failures (network errors, session timeouts) are not cached — the callsign will be retried on the next spot
+
+### Notes
+
+- `secrets.json` and `qrz_cache.json` are excluded from git via `.gitignore`
+- The grid is truncated to 4 characters in the WSJT-X decode message to match the FT8 message format that GridTracker expects
+- The QRZ module uses only Python stdlib (`urllib.request`) — no additional dependencies
+
 ## How It Works
 
 ```
@@ -273,14 +329,13 @@ The server identifies itself as `YOURCALL-2` (e.g. `WF8Z-2`) and supports HRD's 
                                                        ^
                                                        |
 DX Cluster(s) --telnet--> dxcluster.py --spots--> gtbridge.py
-                                                       |
-                                                       v
-                                                  telnet_server.py
-                                                  (DX Spider emulator)
-                                                       ^
-                                                       |
-                                                  HRD / loggers
-                                                  (telnet clients)
+                                                    |      |
+                                              qrz.py      telnet_server.py
+                                           (grid lookup)  (DX Spider emulator)
+                                                               ^
+                                                               |
+                                                          HRD / loggers
+                                                          (telnet clients)
 ```
 
 1. Connects to configured DX cluster server(s) via TCP telnet

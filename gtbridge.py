@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ import sys
 import time
 
 import dxcluster
+import qrz
 import telnet_server
 import wsjtx_udp
 
@@ -102,6 +104,7 @@ class GTBridge:
         self.region = config.get('region', 2)
         self._sock = None
         self._telnet = None
+        self._qrz = None
         self._cluster_clients = []
         self._spot_count = 0
         self._send_count = 0  # total UDP decode packets sent (including resends)
@@ -142,6 +145,16 @@ class GTBridge:
         # Apply band filter
         if self.band_filter and band.lower() not in self.band_filter:
             return
+
+        # QRZ grid lookup
+        if self._qrz:
+            if spot.grid:
+                # Cluster provided a grid — update cache (authoritative)
+                self._qrz.update_cache(spot.dx_call, spot.grid)
+            else:
+                grid = await self._qrz.lookup_grid(spot.dx_call)
+                if grid:
+                    spot.grid = grid
 
         now = time.time()
         key = (band, spot.dx_call)
@@ -230,7 +243,7 @@ class GTBridge:
             # Re-send all cached decodes for this instance
             for spot, cluster_name in spots:
                 if spot.grid:
-                    msg_text = f"CQ {spot.dx_call} {spot.grid}"
+                    msg_text = f"CQ {spot.dx_call} {spot.grid[:4]}"
                 else:
                     msg_text = f"CQ {spot.dx_call}"
 
@@ -300,6 +313,12 @@ class GTBridge:
                 host='0.0.0.0', port=port, node_call=node_call)
             await self._telnet.start()
 
+        # QRZ grid lookups
+        qrz_user, qrz_pass = _load_secrets(self.config)
+        if qrz_user and qrz_pass:
+            self._qrz = qrz.QRZLookup(qrz_user, qrz_pass)
+            log.info("QRZ XML lookup enabled for %s", qrz_user)
+
         # Band instances are created dynamically as spots arrive.
         # No initial heartbeat needed — each band sends its own on first spot.
 
@@ -345,6 +364,33 @@ class GTBridge:
             if self._sock:
                 self._sock.close()
             log.info("Bridge stopped. Total spots forwarded: %d", self._spot_count)
+
+
+def _decode_password(value: str) -> str:
+    """Decode a password that may be base64-obfuscated (b64: prefix)."""
+    if value.startswith('b64:'):
+        return base64.b64decode(value[4:]).decode('utf-8')
+    return value
+
+
+def _load_secrets(config: dict) -> tuple:
+    """Load QRZ credentials from secrets.json or environment variables."""
+    user = os.environ.get('QRZ_USER', '')
+    password = os.environ.get('QRZ_PASSWORD', '')
+    if user and password:
+        return user, password
+
+    secrets_file = config.get('secrets_file', 'secrets.json')
+    if os.path.exists(secrets_file):
+        try:
+            with open(secrets_file) as f:
+                secrets = json.load(f)
+            user = secrets.get('qrz_user', '')
+            password = _decode_password(secrets.get('qrz_password', ''))
+        except Exception as e:
+            log.warning("Could not load secrets from %s: %s", secrets_file, e)
+
+    return user, password
 
 
 def load_config(config_path: str) -> dict:
