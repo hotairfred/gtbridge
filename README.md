@@ -15,6 +15,7 @@ If you use GridTracker 2 and want to see DX cluster spots in the call roster wit
 - Sends `sh/dx` on connect to pre-fill the cache with recent spots
 - Supports per-cluster login commands for server-side filtering
 - QRZ XML grid lookups — automatically populates grid squares for spotted callsigns (requires QRZ XML subscription)
+- FlexRadio click-to-tune — clicking a spot in GridTracker's call roster tunes a matching Flex 6000 series slice to that frequency
 - Built-in telnet server re-broadcasts spots to Ham Radio Deluxe, Log4OM, or any DX cluster client (emulates DX Spider node with VE7CC CC11 support)
 - Filters by mode and/or band
 - Pure Python 3 — no external dependencies
@@ -32,6 +33,7 @@ If you use GridTracker 2 and want to see DX cluster spots in the call roster wit
    - `wsjtx_udp.py`
    - `telnet_server.py`
    - `qrz.py` (optional — only needed for QRZ grid lookups)
+   - `flexradio.py` (optional — only needed for FlexRadio click-to-tune)
 
 2. Run it:
    ```
@@ -192,7 +194,7 @@ This sets GTBridge up to start automatically at boot and restart if it crashes.
 1. Copy the GTBridge files somewhere permanent:
    ```bash
    sudo mkdir -p /opt/gtbridge
-   sudo cp gtbridge.py dxcluster.py wsjtx_udp.py telnet_server.py qrz.py gtbridge.json /opt/gtbridge/
+   sudo cp gtbridge.py dxcluster.py wsjtx_udp.py telnet_server.py qrz.py flexradio.py gtbridge.json /opt/gtbridge/
    ```
 
 2. Create a system user (optional, runs the service without a login shell):
@@ -321,21 +323,59 @@ python3 gtbridge.py
 - The grid is truncated to 4 characters in the WSJT-X decode message to match the FT8 message format that GridTracker expects
 - The QRZ module uses only Python stdlib (`urllib.request`) — no additional dependencies
 
+## FlexRadio Click-to-Tune
+
+If you have a FlexRadio 6000 series radio, GTBridge can tune it when you click a spot in GridTracker's call roster. It connects to the radio via the SmartSDR TCP API (port 4992), monitors which slices are active, and tunes the matching slice to the spotted frequency.
+
+### Setup
+
+Add these settings to `gtbridge.json`:
+
+```json
+{
+  "flex_radio": true,
+  "flex_host": "192.168.1.238",
+  "flex_port": 4992
+}
+```
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `flex_radio` | Enable FlexRadio integration | `false` |
+| `flex_host` | IP address of the FlexRadio | `192.168.1.238` |
+| `flex_port` | SmartSDR TCP API port | `4992` |
+
+### How It Works
+
+1. GTBridge connects to the radio and subscribes to slice status updates
+2. It tracks all active slices — their frequency, band, and mode
+3. When you click a callsign in GridTracker's call roster, GridTracker sends a Reply message back via UDP
+4. GTBridge parses the reply to identify the clicked callsign, band, and mode
+5. It finds an active Flex slice that matches the band and mode (e.g., a slice on 40m in CW mode)
+6. If a match is found, it tunes that slice to the exact spotted frequency
+
+### Behavior
+
+- **Conservative tuning** — only tunes existing slices, never creates or removes them
+- **Mode matching** — CW spots tune CW slices, SSB spots tune USB/LSB slices
+- **No match = no action** — if no slice matches the band and mode, the click is ignored
+- **Auto-reconnect** — if the radio connection drops, it reconnects automatically
+
 ## How It Works
 
 ```
                                                   GridTracker 2
-                                                  (UDP decode msgs)
-                                                       ^
-                                                       |
+                                                  (UDP decode + reply)
+                                                       ^  |
+                                                       |  v
 DX Cluster(s) --telnet--> dxcluster.py --spots--> gtbridge.py
-                                                    |      |
-                                              qrz.py      telnet_server.py
-                                           (grid lookup)  (DX Spider emulator)
-                                                               ^
-                                                               |
-                                                          HRD / loggers
-                                                          (telnet clients)
+                                                  |    |      |
+                                            qrz.py  flex     telnet_server.py
+                                         (grid lkp) radio.py (DX Spider node)
+                                                     |            ^
+                                                     v            |
+                                                  FlexRadio   HRD / loggers
+                                                  (tune)      (telnet)
 ```
 
 1. Connects to configured DX cluster server(s) via TCP telnet

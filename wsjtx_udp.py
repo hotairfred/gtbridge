@@ -1,13 +1,12 @@
 """
-WSJT-X UDP Protocol Encoder
+WSJT-X UDP Protocol Encoder/Decoder
 
-Encodes messages in the WSJT-X UDP binary format (QDataStream)
-so that applications like GridTracker 2 can receive them.
+Encodes and decodes messages in the WSJT-X UDP binary format (QDataStream)
+so that applications like GridTracker 2 can receive and send them.
 
 Message types implemented:
-  0 - Heartbeat
-  1 - Status
-  2 - Decode
+  Encode: 0 - Heartbeat, 1 - Status, 2 - Decode
+  Decode: 4 - Reply (sent by GridTracker when a callsign is clicked)
 
 Reference: WSJT-X NetworkMessage.hpp
 """
@@ -140,3 +139,87 @@ def current_time_ms():
     """Return milliseconds since midnight UTC (for decode time field)."""
     now = time.gmtime()
     return ((now.tm_hour * 3600) + (now.tm_min * 60) + now.tm_sec) * 1000
+
+
+# ------------------------------------------------------------------ #
+#  Decoders                                                            #
+# ------------------------------------------------------------------ #
+
+def _decode_utf8_string(data, offset):
+    """Decode a length-prefixed UTF-8 string. Returns (string, new_offset)."""
+    length = struct.unpack_from('>I', data, offset)[0]
+    offset += 4
+    if length == 0xFFFFFFFF:
+        return None, offset
+    s = data[offset:offset + length].decode('utf-8')
+    return s, offset + length
+
+
+def _decode_quint32(data, offset):
+    return struct.unpack_from('>I', data, offset)[0], offset + 4
+
+
+def _decode_qint32(data, offset):
+    return struct.unpack_from('>i', data, offset)[0], offset + 4
+
+
+def _decode_quint8(data, offset):
+    return struct.unpack_from('>B', data, offset)[0], offset + 1
+
+
+def _decode_bool(data, offset):
+    return struct.unpack_from('>?', data, offset)[0], offset + 1
+
+
+def _decode_double(data, offset):
+    return struct.unpack_from('>d', data, offset)[0], offset + 8
+
+
+def parse_header(data):
+    """Parse the common WSJT-X message header.
+
+    Returns (msg_type, client_id, payload_offset) or None on error.
+    """
+    if len(data) < 12:
+        return None
+    magic = struct.unpack_from('>I', data, 0)[0]
+    if magic != WSJTX_MAGIC:
+        return None
+    schema = struct.unpack_from('>I', data, 4)[0]
+    msg_type = struct.unpack_from('>I', data, 8)[0]
+    client_id, offset = _decode_utf8_string(data, 12)
+    return msg_type, client_id, offset
+
+
+def parse_reply(data):
+    """Parse a Reply message (type 4) from GridTracker.
+
+    Returns a dict with: client_id, time_ms, snr, delta_time, delta_freq,
+    mode, message, low_confidence, modifiers.  Or None on error.
+    """
+    hdr = parse_header(data)
+    if hdr is None or hdr[0] != 4:
+        return None
+    _, client_id, off = hdr
+    try:
+        time_ms, off = _decode_quint32(data, off)
+        snr, off = _decode_qint32(data, off)
+        delta_time, off = _decode_double(data, off)
+        delta_freq, off = _decode_quint32(data, off)
+        mode, off = _decode_utf8_string(data, off)
+        message, off = _decode_utf8_string(data, off)
+        low_confidence, off = _decode_bool(data, off)
+        modifiers, off = _decode_quint8(data, off)
+    except (struct.error, IndexError):
+        return None
+    return {
+        'client_id': client_id,
+        'time_ms': time_ms,
+        'snr': snr,
+        'delta_time': delta_time,
+        'delta_freq': delta_freq,
+        'mode': mode,
+        'message': message,
+        'low_confidence': low_confidence,
+        'modifiers': modifiers,
+    }

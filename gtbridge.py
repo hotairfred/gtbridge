@@ -24,6 +24,7 @@ import sys
 import time
 
 import dxcluster
+import flexradio
 import qrz
 import telnet_server
 import wsjtx_udp
@@ -105,6 +106,7 @@ class GTBridge:
         self._sock = None
         self._telnet = None
         self._qrz = None
+        self._flex = None
         self._cluster_clients = []
         self._spot_count = 0
         self._send_count = 0  # total UDP decode packets sent (including resends)
@@ -290,10 +292,66 @@ class GTBridge:
                      self._spot_count, len(self._spot_cache),
                      self._send_count, instances)
 
+    async def _udp_listener(self):
+        """Listen for Reply messages from GridTracker on the sending socket."""
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                data = await loop.sock_recv(self._sock, 4096)
+                if data:
+                    self._handle_reply(data)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.debug("UDP recv error: %s", e)
+
+    def _handle_reply(self, data: bytes):
+        """Handle a Reply message (type 4) from GridTracker."""
+        reply = wsjtx_udp.parse_reply(data)
+        if reply is None:
+            return
+
+        # Parse the clicked callsign from the message (e.g. "CQ K3UT EM91")
+        parts = (reply.get('message') or '').split()
+        if len(parts) < 2:
+            return
+        # Message format: "CQ CALL [GRID]" — callsign is always the second word
+        dx_call = parts[1]
+        client_id = reply.get('client_id', '')
+
+        # Determine band and mode from the client_id (e.g. "40m-CW")
+        if '-' not in client_id:
+            return
+        band, mode = client_id.rsplit('-', 1)
+
+        if not self._flex or not self._flex.connected:
+            log.debug("[Flex] Reply for %s but Flex not connected", dx_call)
+            return
+
+        # Find the spot in cache to get the exact frequency
+        key = (band, dx_call)
+        entry = self._spot_cache.get(key)
+        if not entry:
+            log.info("[Flex] %s clicked but not in cache", dx_call)
+            return
+        spot = entry['spot']
+
+        # Find a matching slice on the Flex
+        sn = self._flex.find_slice(band, mode)
+        if sn is None:
+            log.info("[Flex] %s clicked: no %s %s slice available", dx_call, band, mode)
+            return
+
+        freq_mhz = spot.freq_khz / 1000.0
+        log.info("[Flex] %s clicked: tuning slice %d to %.3f kHz (%s %s)",
+                 dx_call, sn, spot.freq_khz, band, mode)
+        asyncio.create_task(self._flex.tune(sn, freq_mhz))
+
     async def run(self):
         """Main entry point - run the bridge."""
-        # Create UDP socket
+        # Create UDP socket (non-blocking for async recv in _udp_listener)
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.setblocking(False)
         log.info("UDP target: %s:%d (client_id=%s)",
                  self.udp_host, self.udp_port, self.client_id)
         log.info("Callsign: %s  Grid: %s", self.callsign, self.grid or '(not set)')
@@ -319,6 +377,13 @@ class GTBridge:
             self._qrz = qrz.QRZLookup(qrz_user, qrz_pass)
             log.info("QRZ XML lookup enabled for %s", qrz_user)
 
+        # FlexRadio integration
+        if self.config.get('flex_radio', False):
+            flex_host = self.config.get('flex_host', '192.168.1.238')
+            flex_port = self.config.get('flex_port', 4992)
+            self._flex = flexradio.FlexRadioClient(flex_host, flex_port)
+            log.info("Flex Radio: %s:%d", flex_host, flex_port)
+
         # Band instances are created dynamically as spots arrive.
         # No initial heartbeat needed — each band sends its own on first spot.
 
@@ -329,6 +394,11 @@ class GTBridge:
         tasks.append(asyncio.create_task(self._heartbeat_loop()))
         tasks.append(asyncio.create_task(self._cycle_loop()))
         tasks.append(asyncio.create_task(self._stats_loop()))
+
+        # Flex Radio client
+        if self._flex:
+            tasks.append(asyncio.create_task(self._flex.run()))
+            tasks.append(asyncio.create_task(self._udp_listener()))
 
         # Cluster clients
         clusters = self.config.get('clusters', [])
@@ -359,6 +429,8 @@ class GTBridge:
         finally:
             for client in self._cluster_clients:
                 client.stop()
+            if self._flex:
+                self._flex.stop()
             if self._telnet:
                 await self._telnet.stop()
             if self._sock:
