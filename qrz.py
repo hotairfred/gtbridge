@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Optional
@@ -34,6 +35,8 @@ class QRZLookup:
         self._session_key = None
         self._cache = {}
         self._sem = asyncio.Semaphore(1)  # serialize lookups
+        self._last_lookup = 0.0  # timestamp of last API call
+        self._min_interval = 2.0  # seconds between API calls
         self._load_cache()
 
     # ------------------------------------------------------------------ #
@@ -157,14 +160,20 @@ class QRZLookup:
             cached = self._cache[call]
             return cached if cached else None
 
-        # Slow path: QRZ API (serialized to avoid hammering)
+        # Slow path: QRZ API (serialized + rate-limited)
         async with self._sem:
             # Re-check after acquiring lock
             if call in self._cache:
                 cached = self._cache[call]
                 return cached if cached else None
 
+            # Rate limit: wait if we queried too recently
+            elapsed = time.monotonic() - self._last_lookup
+            if elapsed < self._min_interval:
+                await asyncio.sleep(self._min_interval - elapsed)
+
             grid = await asyncio.to_thread(self._fetch_grid, call)
+            self._last_lookup = time.monotonic()
             if grid is not _LOOKUP_FAILED:
                 # Cache both grids and confirmed "not found" — but NOT transient failures
                 self._cache[call] = grid or _NOT_FOUND
