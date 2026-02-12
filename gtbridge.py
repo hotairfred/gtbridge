@@ -103,6 +103,7 @@ class GTBridge:
         self.mode_filter = set(m.upper() for m in config.get('mode_filter', []))
         self.band_filter = set(b.lower() for b in config.get('band_filter', []))
         self.region = config.get('region', 2)
+        self.qrz_skimmer_only = config.get('qrz_skimmer_only', False)
         self._sock = None
         self._telnet = None
         self._qrz = None
@@ -153,7 +154,7 @@ class GTBridge:
             if spot.grid:
                 # Cluster provided a grid — update cache (authoritative)
                 self._qrz.update_cache(spot.dx_call, spot.grid)
-            else:
+            elif not self.qrz_skimmer_only or '#' in (spot.spotter or ''):
                 grid = await self._qrz.lookup_grid(spot.dx_call)
                 if grid:
                     spot.grid = grid
