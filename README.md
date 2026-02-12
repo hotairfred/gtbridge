@@ -14,6 +14,7 @@ If you use GridTracker 2 and want to see DX cluster spots in the call roster wit
 - Re-spots reset the TTL — active stations stay visible as long as they keep getting spotted
 - Sends `sh/dx` on connect to pre-fill the cache with recent spots
 - Supports per-cluster login commands for server-side filtering
+- POTA (Parks on the Air) spots — polls the POTA API for active activators and displays them in the call roster with grids and bearings (no subscription required)
 - QRZ XML grid lookups — automatically populates grid squares for spotted callsigns (requires QRZ XML subscription)
 - FlexRadio click-to-tune — clicking a spot in GridTracker's call roster tunes a matching Flex 6000 series slice to that frequency
 - Built-in telnet server re-broadcasts spots to Ham Radio Deluxe, Log4OM, or any DX cluster client (emulates DX Spider node with VE7CC CC11 support)
@@ -32,6 +33,7 @@ If you use GridTracker 2 and want to see DX cluster spots in the call roster wit
    - `dxcluster.py`
    - `wsjtx_udp.py`
    - `telnet_server.py`
+   - `pota.py` (optional — only needed for POTA spots)
    - `qrz.py` (optional — only needed for QRZ grid lookups)
    - `flexradio.py` (optional — only needed for FlexRadio click-to-tune)
 
@@ -70,7 +72,8 @@ Edit `gtbridge.json`:
   "mode_filter": ["CW", "SSB"],
   "band_filter": [],
   "telnet_server": true,
-  "telnet_port": 7300
+  "telnet_port": 7300,
+  "qrz_skimmer_only": false
 }
 ```
 
@@ -90,6 +93,9 @@ Edit `gtbridge.json`:
 | `band_filter` | Only forward these bands (empty = all) | `[]` |
 | `telnet_server` | Enable built-in telnet server for HRD/loggers | `false` |
 | `telnet_port` | TCP port for the telnet server | `7300` |
+| `qrz_skimmer_only` | Only do QRZ grid lookups for skimmer-decoded spots | `false` |
+| `pota_spots` | Enable POTA activator spots from pota.app | `false` |
+| `pota_poll_interval` | Seconds between POTA API polls | `120` |
 
 ### ITU Regions
 
@@ -194,7 +200,7 @@ This sets GTBridge up to start automatically at boot and restart if it crashes.
 1. Copy the GTBridge files somewhere permanent:
    ```bash
    sudo mkdir -p /opt/gtbridge
-   sudo cp gtbridge.py dxcluster.py wsjtx_udp.py telnet_server.py qrz.py flexradio.py gtbridge.json /opt/gtbridge/
+   sudo cp gtbridge.py dxcluster.py wsjtx_udp.py telnet_server.py pota.py qrz.py flexradio.py gtbridge.json /opt/gtbridge/
    ```
 
 2. Create a system user (optional, runs the service without a login shell):
@@ -271,7 +277,7 @@ The server identifies itself as `YOURCALL-2` (e.g. `WF8Z-2`) and supports HRD's 
 
 ## QRZ Grid Lookups
 
-GTBridge can look up grid squares for spotted callsigns via the QRZ.com XML API. This populates the grid field in GridTracker's call roster, so you can see where stations are located. Requires a QRZ XML Logbook Data subscription.
+GTBridge can look up grid squares for spotted callsigns via the QRZ.com XML API. This populates the grid field in GridTracker's call roster, so you can see where stations are located and get azimuth bearings. Requires a QRZ XML Logbook Data subscription.
 
 ### Setup
 
@@ -308,13 +314,29 @@ export QRZ_PASSWORD=your_password
 python3 gtbridge.py
 ```
 
+### Skimmer-Only Mode
+
+By default, QRZ lookups are performed for all spotted callsigns. If you're running a local CW skimmer (e.g. SDC-Connectors), you can limit lookups to only skimmer-decoded spots:
+
+```json
+"qrz_skimmer_only": true
+```
+
+This matches GridTracker's philosophy of "show what you can hear" — skimmer spots mean the station was decoded locally, so the grid is meaningful. Spots from human spotters on the cluster are passed through without a QRZ lookup (they'll still show in the roster, just without a grid or bearing).
+
+Set `qrz_skimmer_only` to `false` (the default) if you're using a regular DX cluster without a local skimmer and want grids for all spots.
+
+### Bearings
+
+GridTracker calculates azimuth bearings automatically from your grid to each spotted station's grid. As long as the spot has a grid (either from the cluster or from a QRZ lookup), the Azim column in the call roster will be populated. No additional configuration is needed — just make sure your `grid` is set correctly in `gtbridge.json`.
+
 ### How It Works
 
 - When a new callsign is spotted, GTBridge checks its local cache first
 - On a cache miss, it queries the QRZ XML API for the grid square
 - Results are cached to disk (`qrz_cache.json`) to avoid redundant lookups
 - If a cluster spot already includes a grid, that grid is used as-is and saved to the cache
-- Lookups are serialized (one at a time) to avoid hammering the QRZ API
+- Lookups are rate-limited (2 seconds between API calls) to avoid hammering the QRZ server
 - Transient failures (network errors, session timeouts) are not cached — the callsign will be retried on the next spot
 
 ### Notes
@@ -322,6 +344,29 @@ python3 gtbridge.py
 - `secrets.json` and `qrz_cache.json` are excluded from git via `.gitignore`
 - The grid is truncated to 4 characters in the WSJT-X decode message to match the FT8 message format that GridTracker expects
 - The QRZ module uses only Python stdlib (`urllib.request`) — no additional dependencies
+
+## POTA (Parks on the Air) Spots
+
+GTBridge can pull active POTA activator spots from the pota.app API and display them in GridTracker's call roster. This is useful for POTA chasers who want to see park activators alongside DX cluster spots — especially on CW and SSB, where GridTracker doesn't automatically detect POTA activity.
+
+### Setup
+
+Add this to `gtbridge.json`:
+
+```json
+"pota_spots": true
+```
+
+That's it. No account or API key needed — the POTA API is public.
+
+### How It Works
+
+- GTBridge polls the POTA activator spot feed every 2 minutes (configurable via `pota_poll_interval`)
+- FT8/FT4 spots are skipped since GridTracker already handles POTA tagging for digital modes
+- CW and SSB activators are sent to GridTracker as decode messages with `CQ POTA CALL GRID` in the message text
+- Grids come directly from the POTA API — no QRZ lookup needed
+- Spots go through the same mode and band filters as cluster spots
+- POTA spots are also broadcast to telnet clients (HRD, Log4OM, etc.) if the telnet server is enabled
 
 ## FlexRadio Click-to-Tune
 
@@ -369,7 +414,7 @@ Add these settings to `gtbridge.json`:
                                                        ^  |
                                                        |  v
 DX Cluster(s) --telnet--> dxcluster.py --spots--> gtbridge.py
-                                                  |    |      |
+POTA API ----http poll--> pota.py ------spots-->/  |    |      |
                                             qrz.py  flex     telnet_server.py
                                          (grid lkp) radio.py (DX Spider node)
                                                      |            ^

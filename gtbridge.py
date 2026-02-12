@@ -25,6 +25,7 @@ import time
 
 import dxcluster
 import flexradio
+import pota
 import qrz
 import telnet_server
 import wsjtx_udp
@@ -108,11 +109,15 @@ class GTBridge:
         self._telnet = None
         self._qrz = None
         self._flex = None
+        self._pota = None
         self._cluster_clients = []
         self._spot_count = 0
         self._send_count = 0  # total UDP decode packets sent (including resends)
         # Spot cache: keyed by (band, dx_call) -> {spot, cluster_name, first_seen, last_updated}
         self._spot_cache = {}
+        # Stale cache: expired spots kept for click-to-tune (5 min grace period)
+        self._stale_cache = {}
+        self._stale_ttl = 300  # 5 minutes
         self._cache_lock = asyncio.Lock()
         # Track which (band, mode) combos we've seen (for heartbeats)
         self._active_instances = set()
@@ -225,10 +230,19 @@ class GTBridge:
                     by_inst[inst].append((spot, entry['cluster_name']))
 
             for key in expired_keys:
-                del self._spot_cache[key]
+                entry = self._spot_cache.pop(key)
+                entry['expired_at'] = now
+                self._stale_cache[key] = entry
+
+            # Purge stale entries past the grace period
+            stale_expired = [k for k, v in self._stale_cache.items()
+                             if now - v['expired_at'] > self._stale_ttl]
+            for key in stale_expired:
+                del self._stale_cache[key]
 
         if expired_keys:
-            log.debug("Expired %d spots from cache", len(expired_keys))
+            log.debug("Expired %d spots from cache (%d stale)",
+                      len(expired_keys), len(self._stale_cache))
 
         time_ms = wsjtx_udp.current_time_ms()
         total_sent = 0
@@ -245,10 +259,11 @@ class GTBridge:
 
             # Re-send all cached decodes for this instance
             for spot, cluster_name in spots:
+                cq_prefix = "CQ POTA" if getattr(spot, 'pota', False) else "CQ"
                 if spot.grid:
-                    msg_text = f"CQ {spot.dx_call} {spot.grid[:4]}"
+                    msg_text = f"{cq_prefix} {spot.dx_call} {spot.grid[:4]}"
                 else:
-                    msg_text = f"CQ {spot.dx_call}"
+                    msg_text = f"{cq_prefix} {spot.dx_call}"
 
                 snr = spot.snr if spot.snr is not None else -10
                 mode_char = MODE_CHAR.get(spot.mode, '~') if spot.mode else '~'
@@ -329,9 +344,9 @@ class GTBridge:
             log.debug("[Flex] Reply for %s but Flex not connected", dx_call)
             return
 
-        # Find the spot in cache to get the exact frequency
+        # Find the spot in cache (or stale cache) to get the exact frequency
         key = (band, dx_call)
-        entry = self._spot_cache.get(key)
+        entry = self._spot_cache.get(key) or self._stale_cache.get(key)
         if not entry:
             log.info("[Flex] %s clicked but not in cache", dx_call)
             return
@@ -385,6 +400,17 @@ class GTBridge:
             self._flex = flexradio.FlexRadioClient(flex_host, flex_port)
             log.info("Flex Radio: %s:%d", flex_host, flex_port)
 
+        # POTA spots
+        if self.config.get('pota_spots', False):
+            poll_interval = self.config.get('pota_poll_interval', 120)
+            self._pota = pota.POTAFetcher(
+                on_spot=self._on_spot,
+                poll_interval=poll_interval,
+                mode_filter=self.mode_filter,
+                band_filter=self.band_filter,
+            )
+            log.info("POTA spots enabled (polling every %ds)", poll_interval)
+
         # Band instances are created dynamically as spots arrive.
         # No initial heartbeat needed — each band sends its own on first spot.
 
@@ -400,6 +426,10 @@ class GTBridge:
         if self._flex:
             tasks.append(asyncio.create_task(self._flex.run()))
             tasks.append(asyncio.create_task(self._udp_listener()))
+
+        # POTA fetcher
+        if self._pota:
+            tasks.append(asyncio.create_task(self._pota.run()))
 
         # Cluster clients
         clusters = self.config.get('clusters', [])
@@ -430,6 +460,8 @@ class GTBridge:
         finally:
             for client in self._cluster_clients:
                 client.stop()
+            if self._pota:
+                self._pota.stop()
             if self._flex:
                 self._flex.stop()
             if self._telnet:
