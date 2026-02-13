@@ -27,6 +27,7 @@ import dxcluster
 import flexradio
 import pota
 import qrz
+import sota
 import telnet_server
 import wsjtx_udp
 
@@ -110,6 +111,7 @@ class GTBridge:
         self._qrz = None
         self._flex = None
         self._pota = None
+        self._sota = None
         self._cluster_clients = []
         self._spot_count = 0
         self._send_count = 0  # total UDP decode packets sent (including resends)
@@ -154,12 +156,15 @@ class GTBridge:
         if self.band_filter and band.lower() not in self.band_filter:
             return
 
-        # QRZ grid lookup
-        if self._qrz:
+        # QRZ grid lookup (skip SOTA — summit grids come from SOTA API)
+        if self._qrz and getattr(spot, 'activity', None) != 'SOTA':
             if spot.grid:
-                # Cluster provided a grid — update cache (authoritative)
+                # Source provided a grid — update cache (authoritative)
                 self._qrz.update_cache(spot.dx_call, spot.grid)
-            elif not self.qrz_skimmer_only or '#' in (spot.spotter or ''):
+            elif (not self.qrz_skimmer_only
+                  or '#' in (spot.spotter or '')
+                  or getattr(spot, 'activity', None)):
+                # Always look up grids for POTA spots
                 grid = await self._qrz.lookup_grid(spot.dx_call)
                 if grid:
                     spot.grid = grid
@@ -169,6 +174,10 @@ class GTBridge:
 
         async with self._cache_lock:
             if key in self._spot_cache:
+                old_spot = self._spot_cache[key]['spot']
+                # Sticky activity tag — once tagged POTA/SOTA, keep it
+                if not getattr(spot, 'activity', None) and getattr(old_spot, 'activity', None):
+                    spot.activity = old_spot.activity
                 # Update existing spot (refreshes data, keeps original first_seen)
                 self._spot_cache[key]['spot'] = spot
                 self._spot_cache[key]['cluster_name'] = cluster_name
@@ -259,7 +268,8 @@ class GTBridge:
 
             # Re-send all cached decodes for this instance
             for spot, cluster_name in spots:
-                cq_prefix = "CQ POTA" if getattr(spot, 'pota', False) else "CQ"
+                activity = getattr(spot, 'activity', None)
+                cq_prefix = f"CQ {activity}" if activity else "CQ"
                 if spot.grid:
                     msg_text = f"{cq_prefix} {spot.dx_call} {spot.grid[:4]}"
                 else:
@@ -327,12 +337,15 @@ class GTBridge:
         if reply is None:
             return
 
-        # Parse the clicked callsign from the message (e.g. "CQ K3UT EM91")
+        # Parse the clicked callsign from the message
+        # Formats: "CQ CALL [GRID]" or "CQ POTA CALL [GRID]" or "CQ SOTA CALL [GRID]"
         parts = (reply.get('message') or '').split()
         if len(parts) < 2:
             return
-        # Message format: "CQ CALL [GRID]" — callsign is always the second word
-        dx_call = parts[1]
+        if len(parts) >= 3 and parts[1] in ('POTA', 'SOTA'):
+            dx_call = parts[2]
+        else:
+            dx_call = parts[1]
         client_id = reply.get('client_id', '')
 
         # Determine band and mode from the client_id (e.g. "40m-CW")
@@ -408,8 +421,21 @@ class GTBridge:
                 poll_interval=poll_interval,
                 mode_filter=self.mode_filter,
                 band_filter=self.band_filter,
+                spot_ttl=self.spot_ttl,
             )
             log.info("POTA spots enabled (polling every %ds)", poll_interval)
+
+        # SOTA spots
+        if self.config.get('sota_spots', False):
+            poll_interval = self.config.get('sota_poll_interval', 120)
+            self._sota = sota.SOTAFetcher(
+                on_spot=self._on_spot,
+                poll_interval=poll_interval,
+                mode_filter=self.mode_filter,
+                band_filter=self.band_filter,
+                spot_ttl=self.spot_ttl,
+            )
+            log.info("SOTA spots enabled (polling every %ds)", poll_interval)
 
         # Band instances are created dynamically as spots arrive.
         # No initial heartbeat needed — each band sends its own on first spot.
@@ -430,6 +456,10 @@ class GTBridge:
         # POTA fetcher
         if self._pota:
             tasks.append(asyncio.create_task(self._pota.run()))
+
+        # SOTA fetcher
+        if self._sota:
+            tasks.append(asyncio.create_task(self._sota.run()))
 
         # Cluster clients
         clusters = self.config.get('clusters', [])
@@ -462,6 +492,8 @@ class GTBridge:
                 client.stop()
             if self._pota:
                 self._pota.stop()
+            if self._sota:
+                self._sota.stop()
             if self._flex:
                 self._flex.stop()
             if self._telnet:

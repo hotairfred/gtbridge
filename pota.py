@@ -11,6 +11,7 @@ API endpoint: https://api.pota.app/spot/activator (no auth required)
 import asyncio
 import json
 import logging
+import time
 import urllib.request
 from typing import Callable, Optional
 
@@ -24,19 +25,16 @@ class POTAFetcher:
 
     def __init__(self, on_spot: Callable, poll_interval: int = 120,
                  mode_filter: Optional[set] = None,
-                 band_filter: Optional[set] = None):
-        """
-        Args:
-            on_spot: async callback(spot, source_name) — same signature as cluster spots
-            poll_interval: seconds between API polls (default 120)
-            mode_filter: set of modes to include (empty/None = all)
-            band_filter: set of bands to include (empty/None = all)
-        """
+                 band_filter: Optional[set] = None,
+                 spot_ttl: int = 300):
         self._on_spot = on_spot
         self._poll_interval = poll_interval
         self._mode_filter = mode_filter or set()
         self._band_filter = band_filter or set()
-        self._seen = {}  # spotId -> True, to avoid re-processing same spot
+        # Track last-delivered state: call -> (freq, mode, timestamp)
+        # Re-deliver when data changes or before spot_ttl expires
+        self._last_state = {}
+        self._refresh_interval = max(spot_ttl - 30, 60)  # refresh before TTL
         self._running = False
 
     def _fetch(self) -> list:
@@ -49,7 +47,7 @@ class POTAFetcher:
             return json.loads(resp.read().decode('utf-8'))
 
     async def _poll(self):
-        """Single poll cycle: fetch spots, deliver new ones."""
+        """Single poll cycle: fetch spots, deliver new/changed ones."""
         try:
             spots = await asyncio.to_thread(self._fetch)
         except Exception as e:
@@ -57,18 +55,9 @@ class POTAFetcher:
             return
 
         new_count = 0
-        current_ids = set()
+        current_calls = set()
 
         for s in spots:
-            spot_id = s.get('spotId')
-            if spot_id is None:
-                continue
-            current_ids.add(spot_id)
-
-            # Skip if we already processed this exact spot
-            if spot_id in self._seen:
-                continue
-
             call = (s.get('activator') or '').upper().strip()
             freq_str = s.get('frequency', '0')
             mode = (s.get('mode') or '').upper().strip()
@@ -76,6 +65,11 @@ class POTAFetcher:
             reference = s.get('reference') or ''
 
             if not call or not freq_str:
+                continue
+
+            # Skip QRT spots
+            comments = (s.get('comments') or '').upper()
+            if 'QRT' in comments:
                 continue
 
             try:
@@ -87,12 +81,19 @@ class POTAFetcher:
             if mode in ('FT8', 'FT4'):
                 continue
 
-            self._seen[spot_id] = True
+            current_calls.add(call)
+
+            # Only deliver if new, data changed, or approaching TTL expiry
+            now = time.monotonic()
+            state = (freq_khz, mode)
+            prev = self._last_state.get(call)
+            if prev and prev[0] == state and (now - prev[1]) < self._refresh_interval:
+                continue
+
+            self._last_state[call] = (state, now)
             new_count += 1
 
-            # Build a DXSpot-compatible object
             from dxcluster import DXSpot
-            # Extract HHMM from spotTime (e.g. "2026-02-12T23:08:46")
             spot_time = s.get('spotTime', '')
             time_utc = spot_time[11:16].replace(':', '') if len(spot_time) >= 16 else '0000'
             spot = DXSpot(
@@ -105,24 +106,22 @@ class POTAFetcher:
                 snr=None,
                 grid=grid or None,
             )
-            # Tag as POTA so flush_cycle can use "CQ POTA" message format
-            spot.pota = True
-            spot.pota_ref = reference
+            spot.activity = 'POTA'
 
             await self._on_spot(spot, 'POTA')
 
-        # Prune seen IDs that are no longer in the API response
-        self._seen = {k: v for k, v in self._seen.items() if k in current_ids}
+        # Prune activators no longer in the API
+        self._last_state = {k: v for k, v in self._last_state.items() if k in current_calls}
 
         if new_count:
-            log.info("[POTA] %d new activators (%d total active)", new_count, len(spots))
+            log.info("[POTA] %d new/changed activators (%d total active)",
+                     new_count, len(current_calls))
 
     async def run(self):
         """Poll loop — runs until cancelled."""
         self._running = True
         log.info("[POTA] Polling every %ds from %s", self._poll_interval, POTA_API_URL)
 
-        # Initial fetch immediately
         await self._poll()
 
         while self._running:
