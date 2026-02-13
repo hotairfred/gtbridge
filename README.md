@@ -54,7 +54,7 @@ Edit `gtbridge.json`:
 {
   "callsign": "W1AW",
   "grid": "FN31",
-  "udp_host": "192.168.1.205",
+  "udp_host": "127.0.0.1",
   "udp_port": 2237,
   "heartbeat_interval": 15,
   "cycle_interval": 15,
@@ -62,9 +62,9 @@ Edit `gtbridge.json`:
   "region": 2,
   "clusters": [
     {
-      "host": "192.168.1.205",
+      "host": "dxc.nc7j.com",
       "port": 7373,
-      "name": "SDC",
+      "name": "cluster",
       "login_commands": []
     }
   ],
@@ -379,7 +379,7 @@ Add these settings to `gtbridge.json`:
 ```json
 {
   "flex_radio": true,
-  "flex_host": "192.168.1.238",
+  "flex_host": "your.flex.ip.address",
   "flex_port": 4992
 }
 ```
@@ -387,7 +387,7 @@ Add these settings to `gtbridge.json`:
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `flex_radio` | Enable FlexRadio integration | `false` |
-| `flex_host` | IP address of the FlexRadio | `192.168.1.238` |
+| `flex_host` | IP address of the FlexRadio | `your.flex.ip.address` |
 | `flex_port` | SmartSDR TCP API port | `4992` |
 
 ### How It Works

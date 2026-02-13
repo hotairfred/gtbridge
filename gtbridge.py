@@ -34,15 +34,15 @@ import wsjtx_udp
 log = logging.getLogger('gtbridge')
 
 DEFAULT_CONFIG = {
-    "callsign": "WF8Z",
-    "grid": "EM79",
+    "callsign": "N0CALL",
+    "grid": "",
     "client_id": "GTB",
-    "udp_host": "192.168.1.205",
+    "udp_host": "127.0.0.1",
     "udp_port": 2237,
     "heartbeat_interval": 15,
     "cycle_interval": 15,
     "clusters": [
-        {"host": "192.168.1.205", "port": 7373, "name": "SDC"},
+        {"host": "dxc.nc7j.com", "port": 7373, "name": "cluster"},
     ],
     "spot_ttl": 600,
     "log_level": "INFO",
@@ -408,7 +408,7 @@ class GTBridge:
 
         # FlexRadio integration
         if self.config.get('flex_radio', False):
-            flex_host = self.config.get('flex_host', '192.168.1.238')
+            flex_host = self.config.get('flex_host', '127.0.0.1')
             flex_port = self.config.get('flex_port', 4992)
             self._flex = flexradio.FlexRadioClient(flex_host, flex_port)
             log.info("Flex Radio: %s:%d", flex_host, flex_port)
