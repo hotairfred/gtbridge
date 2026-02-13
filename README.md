@@ -96,6 +96,12 @@ Edit `gtbridge.json`:
 | `qrz_skimmer_only` | Only do QRZ grid lookups for skimmer-decoded spots | `false` |
 | `pota_spots` | Enable POTA activator spots from pota.app | `false` |
 | `pota_poll_interval` | Seconds between POTA API polls | `120` |
+| `sota_spots` | Enable SOTA activator spots from sota.org.uk | `false` |
+| `sota_poll_interval` | Seconds between SOTA API polls | `120` |
+| `flex_radio` | Enable FlexRadio click-to-tune integration | `false` |
+| `flex_host` | IP address of the FlexRadio | `127.0.0.1` |
+| `flex_port` | SmartSDR TCP API port | `4992` |
+| `flex_slice` | Dedicated slice for click-to-tune (0-7), unset = auto-match | not set |
 
 ### ITU Regions
 
@@ -380,7 +386,8 @@ Add these settings to `gtbridge.json`:
 {
   "flex_radio": true,
   "flex_host": "your.flex.ip.address",
-  "flex_port": 4992
+  "flex_port": 4992,
+  "flex_slice": 1
 }
 ```
 
@@ -389,6 +396,7 @@ Add these settings to `gtbridge.json`:
 | `flex_radio` | Enable FlexRadio integration | `false` |
 | `flex_host` | IP address of the FlexRadio | `your.flex.ip.address` |
 | `flex_port` | SmartSDR TCP API port | `4992` |
+| `flex_slice` | Dedicated slice number for click-to-tune (0-7) | not set |
 
 ### How It Works
 
@@ -396,15 +404,19 @@ Add these settings to `gtbridge.json`:
 2. It tracks all active slices — their frequency, band, and mode
 3. When you click a callsign in GridTracker's call roster, GridTracker sends a Reply message back via UDP
 4. GTBridge parses the reply to identify the clicked callsign, band, and mode
-5. It finds an active Flex slice that matches the band and mode (e.g., a slice on 40m in CW mode)
-6. If a match is found, it tunes that slice to the exact spotted frequency
+5. It tunes the dedicated slice (if `flex_slice` is set) or finds a matching slice by band and mode
+6. The slice is tuned to the exact spotted frequency and its mode is changed to match the spot
+
+### Dedicated Slice Mode
+
+When `flex_slice` is set, all click-to-tune actions go to that one slice. The slice's mode is automatically changed to match the spot (CW spots set CW mode, SSB spots set USB/LSB, RTTY spots set DIGU). This is ideal for contest operating — your run slice stays untouched while the dedicated S&P slice follows your clicks across bands and modes.
+
+If `flex_slice` is not set, GTBridge falls back to finding an existing slice that matches the spot's band and mode. In this mode, it only tunes — it never changes the slice's mode.
 
 ### Behavior
 
-- **Conservative tuning** — only tunes existing slices, never creates or removes them
-- **Mode matching** — CW spots tune CW slices, SSB spots tune USB/LSB slices
-- **No match = no action** — if no slice matches the band and mode, the click is ignored
 - **Auto-reconnect** — if the radio connection drops, it reconnects automatically
+- **Mode mapping** — CW→CW, SSB→USB/LSB (by frequency), RTTY→RTTY, FT8/FT4→DIGU
 
 ## How It Works
 

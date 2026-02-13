@@ -35,6 +35,23 @@ _COMPATIBLE_MODES = {
 }
 
 
+def _spot_to_sdr_mode(spot_mode: str, freq_mhz: float) -> str:
+    """Map a GTBridge spot mode to a SmartSDR slice mode string."""
+    m = (spot_mode or '').upper()
+    if m == 'CW':
+        return 'CW'
+    if m == 'SSB':
+        # LSB below 10 MHz, USB at 10 MHz and above; 60m exception (USB)
+        if 5.0 <= freq_mhz <= 5.5:
+            return 'USB'
+        return 'LSB' if freq_mhz < 10.0 else 'USB'
+    if m == 'RTTY':
+        return 'RTTY'
+    if m in ('FT8', 'FT4', 'PSK', 'JS8'):
+        return 'DIGU'
+    return 'USB'
+
+
 class FlexRadioClient:
     """Async client for the SmartSDR TCP API (port 4992).
 
@@ -194,6 +211,24 @@ class FlexRadioClient:
             return
         log.info("[Flex] Tune slice %d -> %.6f MHz", slice_num, freq_mhz)
         await self._send(f"slice t {slice_num} {freq_mhz:.6f}")
+
+    async def set_mode(self, slice_num: int, mode: str):
+        """Set the mode of *slice_num*."""
+        if not self.connected:
+            return
+        log.info("[Flex] Set slice %d mode -> %s", slice_num, mode)
+        await self._send(f"slice set {slice_num} mode={mode}")
+
+    async def tune_to_spot(self, slice_num: int, freq_mhz: float, spot_mode: str):
+        """Tune *slice_num* to *freq_mhz* and set the appropriate SmartSDR mode."""
+        if not self.connected:
+            return
+        sdr_mode = _spot_to_sdr_mode(spot_mode, freq_mhz)
+        # Check if mode change is needed
+        current = self.slices.get(slice_num, {}).get('mode', '').upper()
+        if current != sdr_mode.upper():
+            await self.set_mode(slice_num, sdr_mode)
+        await self.tune(slice_num, freq_mhz)
 
     def stop(self):
         self._close()

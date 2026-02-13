@@ -76,20 +76,21 @@ class GTBridge:
     Spots are buffered and flushed every 15 seconds.
     """
 
-    # Default dial frequencies per band (common FT8 frequencies)
+    # Band lower edge frequencies (Hz) — used as dial_freq base so that
+    # dial + delta_freq = actual spotted frequency in GridTracker.
     BAND_DIAL_FREQ = {
-        '160m': 1840000,
-        '80m':  3573000,
-        '60m':  5357000,
-        '40m':  7074000,
-        '30m':  10136000,
-        '20m':  14074000,
-        '17m':  18100000,
-        '15m':  21074000,
-        '12m':  24915000,
-        '10m':  28074000,
-        '6m':   50313000,
-        '2m':   144174000,
+        '160m': 1800000,
+        '80m':  3500000,
+        '60m':  5330000,
+        '40m':  7000000,
+        '30m':  10100000,
+        '20m':  14000000,
+        '17m':  18068000,
+        '15m':  21000000,
+        '12m':  24890000,
+        '10m':  28000000,
+        '6m':   50000000,
+        '2m':   144000000,
     }
 
     def __init__(self, config: dict):
@@ -277,7 +278,7 @@ class GTBridge:
 
                 snr = spot.snr if spot.snr is not None else -10
                 mode_char = MODE_CHAR.get(spot.mode, '~') if spot.mode else '~'
-                audio_freq = 200 + (hash(spot.dx_call) % 2800)
+                audio_freq = spot.freq_hz
 
                 self._send_udp(wsjtx_udp.decode(
                     client_id=cid, is_new=True, time_ms=time_ms,
@@ -364,14 +365,22 @@ class GTBridge:
             log.info("[Flex] %s clicked but not in cache", dx_call)
             return
         spot = entry['spot']
+        freq_mhz = spot.freq_khz / 1000.0
 
-        # Find a matching slice on the Flex
+        # Dedicated slice: tune and change mode directly
+        dedicated = self.config.get('flex_slice')
+        if dedicated is not None:
+            log.info("[Flex] %s clicked: tuning slice %d to %.3f kHz %s (%s)",
+                     dx_call, dedicated, spot.freq_khz, mode, band)
+            asyncio.create_task(self._flex.tune_to_spot(dedicated, freq_mhz, mode))
+            return
+
+        # No dedicated slice: find a matching one by band+mode
         sn = self._flex.find_slice(band, mode)
         if sn is None:
             log.info("[Flex] %s clicked: no %s %s slice available", dx_call, band, mode)
             return
 
-        freq_mhz = spot.freq_khz / 1000.0
         log.info("[Flex] %s clicked: tuning slice %d to %.3f kHz (%s %s)",
                  dx_call, sn, spot.freq_khz, band, mode)
         asyncio.create_task(self._flex.tune(sn, freq_mhz))

@@ -126,28 +126,35 @@ _BAND_PLAN = {
         (1843, 2000, 'SSB'),
         # 80m
         (3500, 3570, 'CW'),
+        (3580, 3600, 'RTTY'),
         (3600, 3800, 'SSB'),
         # 60m (channelized USB)
         (5330, 5410, 'SSB'),
         # 40m
         (7000, 7040, 'CW'),
+        (7040, 7060, 'RTTY'),
         (7060, 7200, 'SSB'),
         # 30m (CW/digital only, no phone)
         (10100, 10130, 'CW'),
         # 20m
         (14000, 14070, 'CW'),
+        (14080, 14112, 'RTTY'),
         (14112, 14350, 'SSB'),
         # 17m
         (18068, 18095, 'CW'),
+        (18100, 18109, 'RTTY'),
         (18111, 18168, 'SSB'),
         # 15m
         (21000, 21070, 'CW'),
+        (21080, 21120, 'RTTY'),
         (21151, 21450, 'SSB'),
         # 12m
         (24890, 24915, 'CW'),
+        (24920, 24929, 'RTTY'),
         (24931, 24990, 'SSB'),
         # 10m
         (28000, 28070, 'CW'),
+        (28080, 28150, 'RTTY'),
         (28300, 29700, 'SSB'),
         # 6m
         (50000, 50100, 'CW'),
@@ -159,28 +166,35 @@ _BAND_PLAN = {
         (1850, 2000, 'SSB'),
         # 80m
         (3500, 3570, 'CW'),
+        (3580, 3600, 'RTTY'),
         (3600, 4000, 'SSB'),
         # 60m (channelized USB)
         (5330, 5410, 'SSB'),
         # 40m
         (7000, 7070, 'CW'),
+        (7080, 7125, 'RTTY'),
         (7125, 7300, 'SSB'),
         # 30m (CW/digital only, no phone)
         (10100, 10130, 'CW'),
         # 20m
         (14000, 14070, 'CW'),
+        (14080, 14100, 'RTTY'),
         (14150, 14350, 'SSB'),
         # 17m
         (18068, 18100, 'CW'),
+        (18100, 18109, 'RTTY'),
         (18110, 18168, 'SSB'),
         # 15m
         (21000, 21070, 'CW'),
+        (21080, 21120, 'RTTY'),
         (21150, 21450, 'SSB'),
         # 12m
         (24890, 24920, 'CW'),
+        (24920, 24929, 'RTTY'),
         (24930, 24990, 'SSB'),
         # 10m
         (28000, 28070, 'CW'),
+        (28080, 28150, 'RTTY'),
         (28300, 29700, 'SSB'),
         # 6m
         (50000, 50100, 'CW'),
@@ -192,28 +206,35 @@ _BAND_PLAN = {
         (1843, 2000, 'SSB'),
         # 80m
         (3500, 3570, 'CW'),
+        (3580, 3600, 'RTTY'),
         (3600, 3900, 'SSB'),
         # 60m (channelized USB)
         (5330, 5410, 'SSB'),
         # 40m
         (7000, 7040, 'CW'),
+        (7040, 7060, 'RTTY'),
         (7060, 7300, 'SSB'),
         # 30m (CW/digital only, no phone)
         (10100, 10130, 'CW'),
         # 20m
         (14000, 14070, 'CW'),
+        (14080, 14112, 'RTTY'),
         (14112, 14350, 'SSB'),
         # 17m
         (18068, 18095, 'CW'),
+        (18100, 18109, 'RTTY'),
         (18110, 18168, 'SSB'),
         # 15m
         (21000, 21070, 'CW'),
+        (21080, 21120, 'RTTY'),
         (21150, 21450, 'SSB'),
         # 12m
         (24890, 24920, 'CW'),
+        (24920, 24929, 'RTTY'),
         (24930, 24990, 'SSB'),
         # 10m
         (28000, 28070, 'CW'),
+        (28080, 28150, 'RTTY'),
         (28300, 29700, 'SSB'),
         # 6m
         (50000, 50100, 'CW'),
@@ -234,7 +255,7 @@ def infer_mode(freq_khz: float, region: int = 2) -> Optional[str]:
     Only called when the cluster spot has no mode tag. If the spot already
     specifies a mode, that mode is used as-is.
 
-    Returns 'FT8', 'FT4', 'CW', 'SSB', or None (not in any amateur band).
+    Returns 'FT8', 'FT4', 'CW', 'RTTY', 'SSB', or None (not in any amateur band).
     """
     # Check FT4 first (narrower windows, overlaps FT8 on 80m)
     for dial in _FT4_DIAL:
