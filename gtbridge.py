@@ -23,6 +23,8 @@ import socket
 import sys
 import time
 
+import xml.etree.ElementTree as ET
+
 import dxcluster
 import flexradio
 import pota
@@ -113,6 +115,7 @@ class GTBridge:
         self._flex = None
         self._pota = None
         self._sota = None
+        self._n1mm_sock = None
         self._cluster_clients = []
         self._spot_count = 0
         self._send_count = 0  # total UDP decode packets sent (including resends)
@@ -385,6 +388,103 @@ class GTBridge:
                  dx_call, sn, spot.freq_khz, band, mode)
         asyncio.create_task(self._flex.tune(sn, freq_mhz))
 
+    # ------------------------------------------------------------------ #
+    #  N1MM / SDC-Connectors QSO logging                                   #
+    # ------------------------------------------------------------------ #
+
+    async def _n1mm_listener(self):
+        """Listen for N1MM-compatible QSO broadcasts from SDC-Connectors."""
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                data = await loop.sock_recv(self._n1mm_sock, 8192)
+                if data:
+                    self._handle_n1mm(data)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.debug("N1MM recv error: %s", e)
+
+    def _handle_n1mm(self, data: bytes):
+        """Handle an N1MM-compatible UDP broadcast."""
+        try:
+            text = data.decode('utf-8', errors='replace')
+            root = ET.fromstring(text)
+        except ET.ParseError:
+            return
+
+        if root.tag == 'contactinfo':
+            self._handle_n1mm_contact(root)
+
+    def _handle_n1mm_contact(self, root):
+        """Handle a contactinfo (QSO logged) message from SDC-Connectors."""
+        dx_call = root.findtext('call', '')
+        if not dx_call:
+            return
+
+        mode = root.findtext('mode', '').upper()
+        # N1MM/SDC frequencies are in 10 Hz units
+        rx_freq_raw = int(root.findtext('rxfreq', '0'))
+        freq_hz = rx_freq_raw * 10
+        freq_khz = freq_hz / 1000.0
+
+        grid = root.findtext('gridsquare', '')
+        report_sent = root.findtext('snt', '')
+        report_rcvd = root.findtext('rcv', '')
+        my_call = root.findtext('mycall', '') or self.callsign
+        exchange_sent = root.findtext('sntnr', '')
+        exchange_rcvd = root.findtext('rcvnr', '')
+
+        # Parse timestamp "2026-02-14 17:58:20"
+        dt_off = None
+        timestamp = root.findtext('timestamp', '')
+        if timestamp:
+            try:
+                dp, tp = timestamp.split()
+                yy, mm, dd = dp.split('-')
+                hh, mi, ss = tp.split(':')
+                dt_off = (int(yy), int(mm), int(dd),
+                          int(hh), int(mi), int(ss))
+            except (ValueError, IndexError):
+                pass
+
+        band = dxcluster.freq_to_band(freq_khz)
+        if not band:
+            log.warning("[N1MM] Unknown band for %.1f kHz", freq_khz)
+            return
+
+        # Ensure band+mode instance exists in GridTracker
+        cid = self._instance_client_id(band, mode)
+        inst = (band, mode)
+        if inst not in self._active_instances:
+            self._active_instances.add(inst)
+            dial = self.BAND_DIAL_FREQ.get(band, freq_hz)
+            self._send_udp(wsjtx_udp.heartbeat(client_id=cid))
+            self._send_udp(wsjtx_udp.status(
+                client_id=cid, dial_freq=dial, mode=mode,
+                de_call=self.callsign, de_grid=self.grid, decoding=True,
+            ))
+            log.info("New instance: %s (dial=%d Hz)", cid, dial)
+
+        # Send QSO Logged to GridTracker
+        self._send_udp(wsjtx_udp.qso_logged(
+            client_id=cid,
+            dx_call=dx_call,
+            dx_grid=grid[:4] if grid else '',
+            freq_hz=freq_hz,
+            mode=mode,
+            report_sent=report_sent,
+            report_rcvd=report_rcvd,
+            my_call=my_call,
+            my_grid=self.grid,
+            date_time_off=dt_off,
+            exchange_sent=exchange_sent,
+            exchange_rcvd=exchange_rcvd,
+        ))
+
+        log.info("[N1MM] QSO logged: %s  %.1f kHz  %s  [%s]",
+                 dx_call, freq_khz, mode, band)
+
     async def run(self):
         """Main entry point - run the bridge."""
         # Create UDP socket (non-blocking for async recv in _udp_listener)
@@ -446,6 +546,15 @@ class GTBridge:
             )
             log.info("SOTA spots enabled (polling every %ds)", poll_interval)
 
+        # N1MM-compatible QSO logging (SDC-Connectors)
+        if self.config.get('n1mm_listen', False):
+            n1mm_port = self.config.get('n1mm_port', 12060)
+            self._n1mm_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._n1mm_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._n1mm_sock.bind(('', n1mm_port))
+            self._n1mm_sock.setblocking(False)
+            log.info("N1MM listener: UDP port %d", n1mm_port)
+
         # Band instances are created dynamically as spots arrive.
         # No initial heartbeat needed — each band sends its own on first spot.
 
@@ -469,6 +578,10 @@ class GTBridge:
         # SOTA fetcher
         if self._sota:
             tasks.append(asyncio.create_task(self._sota.run()))
+
+        # N1MM listener
+        if self._n1mm_sock:
+            tasks.append(asyncio.create_task(self._n1mm_listener()))
 
         # Cluster clients
         clusters = self.config.get('clusters', [])
@@ -507,6 +620,8 @@ class GTBridge:
                 self._flex.stop()
             if self._telnet:
                 await self._telnet.stop()
+            if self._n1mm_sock:
+                self._n1mm_sock.close()
             if self._sock:
                 self._sock.close()
             log.info("Bridge stopped. Total spots forwarded: %d", self._spot_count)

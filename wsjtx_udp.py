@@ -5,7 +5,7 @@ Encodes and decodes messages in the WSJT-X UDP binary format (QDataStream)
 so that applications like GridTracker 2 can receive and send them.
 
 Message types implemented:
-  Encode: 0 - Heartbeat, 1 - Status, 2 - Decode
+  Encode: 0 - Heartbeat, 1 - Status, 2 - Decode, 5 - QSO Logged
   Decode: 4 - Reply (sent by GridTracker when a callsign is clicked)
 
 Reference: WSJT-X NetworkMessage.hpp
@@ -51,8 +51,31 @@ def _encode_bool(val):
     return struct.pack('>?', val)
 
 
+def _encode_qint64(val):
+    return struct.pack('>q', val)
+
+
 def _encode_double(val):
     return struct.pack('>d', val)
+
+
+def _encode_qdatetime(year, month, day, hour=0, minute=0, second=0):
+    """Encode date/time as QDataStream QDateTime (UTC).
+
+    Args: year, month, day, hour, minute, second (integers).
+    """
+    # QDate: Julian Day Number as qint64
+    a = (14 - month) // 12
+    y = year + 4800 - a
+    m = month + 12 * a - 3
+    jdn = (day + (153 * m + 2) // 5 + 365 * y
+           + y // 4 - y // 100 + y // 400 - 32045)
+    buf = _encode_qint64(jdn)
+    # QTime: milliseconds since midnight as quint32
+    buf += _encode_quint32((hour * 3600 + minute * 60 + second) * 1000)
+    # Timespec: 1 = UTC
+    buf += _encode_quint8(1)
+    return buf
 
 
 def _header(msg_type, client_id):
@@ -132,6 +155,45 @@ def decode(client_id="GTBRIDGE", is_new=True, time_ms=0, snr=-10,
     buf += _encode_utf8_string(message)
     buf += _encode_bool(low_confidence)
     buf += _encode_bool(off_air)
+    return buf
+
+
+def qso_logged(client_id="GTBRIDGE", dx_call="", dx_grid="", freq_hz=0,
+               mode="", report_sent="", report_rcvd="",
+               tx_power="", comments="", name="",
+               date_time_off=None, date_time_on=None,
+               operator_call="", my_call="", my_grid="",
+               exchange_sent="", exchange_rcvd="", adif_prop_mode=""):
+    """Build a QSO Logged message (type 5).
+
+    Sent to GridTracker so it can mark the station as worked.
+
+    Args:
+        date_time_off: Tuple (year, month, day, hour, min, sec) or None for now.
+        date_time_on: Tuple (year, month, day, hour, min, sec) or None for now.
+    """
+    now = time.gmtime()
+    now_dt = (now.tm_year, now.tm_mon, now.tm_mday,
+              now.tm_hour, now.tm_min, now.tm_sec)
+
+    buf = _header(5, client_id)
+    buf += _encode_qdatetime(*(date_time_off or now_dt))
+    buf += _encode_utf8_string(dx_call)
+    buf += _encode_utf8_string(dx_grid)
+    buf += _encode_quint64(freq_hz)
+    buf += _encode_utf8_string(mode)
+    buf += _encode_utf8_string(report_sent)
+    buf += _encode_utf8_string(report_rcvd)
+    buf += _encode_utf8_string(tx_power)
+    buf += _encode_utf8_string(comments)
+    buf += _encode_utf8_string(name)
+    buf += _encode_qdatetime(*(date_time_on or date_time_off or now_dt))
+    buf += _encode_utf8_string(operator_call)
+    buf += _encode_utf8_string(my_call)
+    buf += _encode_utf8_string(my_grid)
+    buf += _encode_utf8_string(exchange_sent)
+    buf += _encode_utf8_string(exchange_rcvd)
+    buf += _encode_utf8_string(adif_prop_mode)
     return buf
 
 
