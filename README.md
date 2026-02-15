@@ -8,15 +8,17 @@ If you use GridTracker 2 and want to see DX cluster spots in the call roster wit
 
 - Connects to one or more DX cluster servers via telnet
 - Parses standard DX cluster spot format (including SDC-Connectors)
-- Infers mode (CW/SSB/FT8/FT4) from frequency when the cluster doesn't provide one, using ITU region band plans and standard digital dial frequencies
-- Creates a separate WSJT-X instance per band and mode (e.g. 20m-CW, 40m-SSB) so GridTracker displays the correct mode for each spot
+- Infers mode (CW/SSB/RTTY/FT8/FT4) from frequency when the cluster doesn't provide one, using ITU region band plans and standard digital dial frequencies
+- Creates a separate WSJT-X instance per band and mode (e.g. 20m-CW, 40m-RTTY) so GridTracker displays the correct mode for each spot
 - Caches spots and re-sends them every 15 seconds so they persist in GridTracker's call roster for a configurable duration (default 10 minutes)
 - Re-spots reset the TTL — active stations stay visible as long as they keep getting spotted
 - Sends `sh/dx` on connect to pre-fill the cache with recent spots
 - Supports per-cluster login commands for server-side filtering
 - POTA (Parks on the Air) spots — polls the POTA API for active activators and displays them in the call roster with grids and bearings (no subscription required)
+- SOTA (Summits on the Air) spots — polls the SOTA API for active activators with summit grid lookups
+- N1MM/SDC-Connectors QSO logging — listens for N1MM-compatible UDP broadcasts and forwards QSO Logged messages to GridTracker so stations are marked as worked in real time
 - QRZ XML grid lookups — automatically populates grid squares for spotted callsigns (requires QRZ XML subscription)
-- FlexRadio click-to-tune — clicking a spot in GridTracker's call roster tunes a matching Flex 6000 series slice to that frequency
+- FlexRadio click-to-tune — clicking a spot in GridTracker's call roster tunes a matching Flex 6000 series slice to that frequency, with dedicated slice and automatic mode switching
 - Built-in telnet server re-broadcasts spots to Ham Radio Deluxe, Log4OM, or any DX cluster client (emulates DX Spider node with VE7CC CC11 support)
 - Filters by mode and/or band
 - Pure Python 3 — no external dependencies
@@ -34,6 +36,7 @@ If you use GridTracker 2 and want to see DX cluster spots in the call roster wit
    - `wsjtx_udp.py`
    - `telnet_server.py`
    - `pota.py` (optional — only needed for POTA spots)
+   - `sota.py` (optional — only needed for SOTA spots)
    - `qrz.py` (optional — only needed for QRZ grid lookups)
    - `flexradio.py` (optional — only needed for FlexRadio click-to-tune)
 
@@ -102,6 +105,8 @@ Edit `gtbridge.json`:
 | `flex_host` | IP address of the FlexRadio | `127.0.0.1` |
 | `flex_port` | SmartSDR TCP API port | `4992` |
 | `flex_slice` | Dedicated slice for click-to-tune (0-7), unset = auto-match | not set |
+| `n1mm_listen` | Enable N1MM-compatible QSO logging listener | `false` |
+| `n1mm_port` | UDP port for N1MM-compatible QSO broadcasts | `12060` |
 
 ### ITU Regions
 
@@ -153,6 +158,11 @@ Only CW and SSB spots (filters out FT8, FT4, RTTY, etc.):
 "mode_filter": ["CW", "SSB"]
 ```
 
+CW, SSB, and RTTY (contest setup):
+```json
+"mode_filter": ["CW", "SSB", "RTTY"]
+```
+
 Only FT8 and CW spots:
 ```json
 "mode_filter": ["FT8", "CW"]
@@ -192,7 +202,7 @@ python3 gtbridge.py -l DEBUG
 
 1. Install Python 3.8+ from https://www.python.org/downloads/
    - During install, check "Add Python to PATH"
-2. Download the four `.py` files into a folder
+2. Download the `.py` files into a folder
 3. Open Command Prompt or PowerShell, navigate to the folder, and run:
    ```
    python gtbridge.py
@@ -206,7 +216,7 @@ This sets GTBridge up to start automatically at boot and restart if it crashes.
 1. Copy the GTBridge files somewhere permanent:
    ```bash
    sudo mkdir -p /opt/gtbridge
-   sudo cp gtbridge.py dxcluster.py wsjtx_udp.py telnet_server.py pota.py qrz.py flexradio.py gtbridge.json /opt/gtbridge/
+   sudo cp gtbridge.py dxcluster.py wsjtx_udp.py telnet_server.py pota.py sota.py qrz.py flexradio.py gtbridge.json /opt/gtbridge/
    ```
 
 2. Create a system user (optional, runs the service without a login shell):
@@ -416,23 +426,73 @@ If `flex_slice` is not set, GTBridge falls back to finding an existing slice tha
 ### Behavior
 
 - **Auto-reconnect** — if the radio connection drops, it reconnects automatically
-- **Mode mapping** — CW→CW, SSB→USB/LSB (by frequency), RTTY→RTTY, FT8/FT4→DIGU
+- **Mode mapping** — CW→CW, SSB→USB/LSB (by frequency), RTTY→DIGU, FT8/FT4→DIGU
 
-## How It Works
+## N1MM / SDC-Connectors QSO Logging
+
+GTBridge can listen for N1MM-compatible UDP broadcasts from SDC-Connectors (or N1MM itself) and forward QSO Logged messages to GridTracker. When you log a contact, GridTracker marks the station as worked in the call roster in real time — no manual log import needed.
+
+### Setup
+
+Add these settings to `gtbridge.json`:
+
+```json
+{
+  "n1mm_listen": true,
+  "n1mm_port": 12060
+}
+```
+
+Then configure SDC-Connectors (or N1MM) to broadcast QSO data via UDP to the machine running GTBridge on port 12060.
+
+### How It Works
+
+1. SDC-Connectors sends an N1MM-compatible `<contactinfo>` XML message via UDP when a QSO is logged
+2. GTBridge parses the XML to extract callsign, frequency, mode, reports, and timestamp
+3. It determines the band and ensures a matching WSJT-X instance exists in GridTracker
+4. It sends a WSJT-X QSO Logged (type 5) message to GridTracker via UDP
+5. GridTracker marks the station as worked in the call roster
+
+This works for all modes — CW, SSB, RTTY, and digital. Frequencies from SDC-Connectors are in N1MM's 10 Hz unit format and are automatically converted.
+
+## SOTA (Summits on the Air) Spots
+
+GTBridge can pull active SOTA activator spots from the SOTA API and display them in GridTracker's call roster.
+
+### Setup
+
+Add this to `gtbridge.json`:
+
+```json
+"sota_spots": true
+```
+
+### How It Works
+
+- GTBridge polls the SOTA spot feed every 2 minutes (configurable via `sota_poll_interval`)
+- Grid squares come from the SOTA summit database (not QRZ) — the activator is on the summit, not at their home QTH
+- Summit grids are cached locally in `sota_cache.json` to avoid redundant API calls
+- Only the most recent spot per activator is used (the SOTA API returns full history)
+- CW and SSB activators are sent to GridTracker as decode messages with `CQ SOTA CALL GRID`
+- Spots go through the same mode and band filters as cluster spots
+
+## Architecture
 
 ```
                                                   GridTracker 2
-                                                  (UDP decode + reply)
+                                                  (UDP decode/logged + reply)
                                                        ^  |
                                                        |  v
 DX Cluster(s) --telnet--> dxcluster.py --spots--> gtbridge.py
-POTA API ----http poll--> pota.py ------spots-->/  |    |      |
-                                            qrz.py  flex     telnet_server.py
-                                         (grid lkp) radio.py (DX Spider node)
-                                                     |            ^
-                                                     v            |
-                                                  FlexRadio   HRD / loggers
-                                                  (tune)      (telnet)
+POTA API ----http poll--> pota.py ------spots-->/  |    |    |    |
+SOTA API ----http poll--> sota.py ------spots-->/  |    |    |    |
+SDC-Connectors ---UDP 12060 (N1MM QSO logged)-->/  |    |    |    |
+                                            qrz.py  flex     |  telnet_server.py
+                                         (grid lkp) radio.py |  (DX Spider node)
+                                                     |       |        ^
+                                                     v       v        |
+                                                  FlexRadio  GT     HRD / loggers
+                                                  (tune)   (logged) (telnet)
 ```
 
 1. Connects to configured DX cluster server(s) via TCP telnet
