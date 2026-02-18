@@ -4,3 +4,4 @@ gtbridge.json
 secrets.json
 qrz_cache.json
 sota_cache.json
+*.log

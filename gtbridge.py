@@ -53,6 +53,7 @@ DEFAULT_CONFIG = {
     "region": 2,
     "telnet_server": False,
     "telnet_port": 7300,
+    "log_file": "",
 }
 
 # Map modes to WSJT-X decode mode character
@@ -712,11 +713,22 @@ Filters:
 
     # Set up logging
     level = args.log_level or config.get('log_level', 'INFO')
+    log_fmt = '%(asctime)s [%(name)s] %(levelname)s: %(message)s'
+    log_datefmt = '%Y-%m-%d %H:%M:%S'
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
-        datefmt='%H:%M:%S',
+        format=log_fmt,
+        datefmt=log_datefmt,
     )
+
+    # Optional file logging
+    log_file = config.get('log_file', '')
+    if log_file:
+        fh = logging.FileHandler(log_file)
+        fh.setLevel(getattr(logging, level.upper(), logging.INFO))
+        fh.setFormatter(logging.Formatter(log_fmt, datefmt=log_datefmt))
+        logging.getLogger().addHandler(fh)
+        logging.getLogger('gtbridge').info("Logging to file: %s", log_file)
 
     if config.get('callsign', 'N0CALL') == 'N0CALL':
         log.warning("=" * 60)

@@ -107,6 +107,7 @@ Edit `gtbridge.json`:
 | `flex_slice` | Dedicated slice for click-to-tune (0-7), unset = auto-match | not set |
 | `n1mm_listen` | Enable N1MM-compatible QSO logging listener | `false` |
 | `n1mm_port` | UDP port for N1MM-compatible QSO broadcasts | `12060` |
+| `log_file` | Path to log file (in addition to console output) | `""` (disabled) |
 
 ### ITU Regions
 
@@ -534,6 +535,32 @@ SDC-Connectors ---UDP 12060 (N1MM QSO logged)-->/  |    |    |    |
 - HRD requires VE7CC CC11 format — GTBridge handles this automatically when HRD sends `set/ve7cc`
 - Check that HRD is connecting to the right IP and port (default 7300)
 - See `HRD_TELNET_PROTOCOL.txt` for detailed protocol notes
+
+## Logging to File
+
+GTBridge can log all output to a file in addition to the console. This is useful for long-running sessions where you want to review what happened while you were away — which stations were spotted, when they appeared, and on what bands.
+
+### Setup
+
+Add this to `gtbridge.json`:
+
+```json
+"log_file": "gtbridge.log"
+```
+
+Log entries include full timestamps (`2026-02-18 02:56:01`) so you can analyze activity patterns across days and weeks. For example, you can grep the log to find out when a particular DX station tends to be active:
+
+```bash
+grep "E74AW" gtbridge.log
+```
+
+Or see all 160m activity from a particular night:
+
+```bash
+grep "160m" gtbridge.log | grep "2026-02-18"
+```
+
+The log file grows indefinitely, so you may want to rotate or trim it periodically.
 
 ## SDC-Connectors Notes
 
