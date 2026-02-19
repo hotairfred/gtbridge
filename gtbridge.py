@@ -281,6 +281,8 @@ class GTBridge:
                     msg_text = f"{cq_prefix} {spot.dx_call}"
 
                 snr = spot.snr if spot.snr is not None else -10
+                if spot.mode in ('FT8', 'FT4'):
+                    snr = -99
                 mode_char = MODE_CHAR.get(spot.mode, '~') if spot.mode else '~'
                 audio_freq = spot.freq_hz
 

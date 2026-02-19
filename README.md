@@ -360,6 +360,7 @@ GridTracker calculates azimuth bearings automatically from your grid to each spo
 
 - `secrets.json` and `qrz_cache.json` are excluded from git via `.gitignore`
 - The grid is truncated to 4 characters in the WSJT-X decode message to match the FT8 message format that GridTracker expects
+- FT8/FT4 cluster spots are sent with an SNR of -99 dB so that real WSJT-X decodes always take priority in GridTracker's call roster. Without this, cluster spots could override the live decode and prevent the station from appearing as a clickable contact. CW, SSB, and RTTY spots retain their actual skimmer dB values.
 - The QRZ module uses only Python stdlib (`urllib.request`) — no additional dependencies
 
 ## POTA (Parks on the Air) Spots
