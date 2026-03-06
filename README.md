@@ -105,6 +105,7 @@ Edit `gtbridge.json`:
 | `flex_host` | IP address of the FlexRadio | `127.0.0.1` |
 | `flex_port` | SmartSDR TCP API port | `4992` |
 | `flex_slice` | Dedicated slice for click-to-tune (0-7), unset = auto-match | not set |
+| `flex_spots` | Inject cluster/POTA/SOTA spots onto SmartSDR panadapter | `true` |
 | `n1mm_listen` | Enable N1MM-compatible QSO logging listener | `false` |
 | `n1mm_port` | UDP port for N1MM-compatible QSO broadcasts | `12060` |
 | `log_file` | Path to log file (in addition to console output) | `""` (disabled) |
@@ -429,6 +430,7 @@ If `flex_slice` is not set, GTBridge falls back to finding an existing slice tha
 
 - **Auto-reconnect** — if the radio connection drops, it reconnects automatically
 - **Mode mapping** — CW→CW, SSB→USB/LSB (by frequency), RTTY→DIGU, FT8/FT4→DIGU
+- **Panadapter spots** — when `flex_spots` is enabled (default), cluster/POTA/SOTA spots are injected directly onto the SmartSDR panadapter and bandmap via the `spot add` API. Click a spot on the waterfall to tune. Spots auto-expire after `spot_ttl` seconds. Set `flex_spots` to `false` to disable without turning off the Flex connection.
 
 ## N1MM / SDC-Connectors QSO Logging
 
