@@ -110,6 +110,7 @@ class GTBridge:
         self.band_filter = set(b.lower() for b in config.get('band_filter', []))
         self.region = config.get('region', 2)
         self.qrz_skimmer_only = config.get('qrz_skimmer_only', False)
+        self.flex_spots = config.get('flex_spots', True)  # inject spots onto SmartSDR panadapter
         self._sock = None
         self._telnet = None
         self._qrz = None
@@ -293,6 +294,16 @@ class GTBridge:
                     low_confidence=False, off_air=False,
                 ))
                 total_sent += 1
+
+                # Inject spot onto SmartSDR panadapter
+                if self._flex and self._flex.connected and self.flex_spots:
+                    asyncio.create_task(self._flex.spot_add(
+                        callsign=spot.dx_call,
+                        freq_mhz=spot.freq_khz / 1000.0,
+                        mode=spot.mode or '',
+                        comment=spot.spotter or '',
+                        lifetime_seconds=self.spot_ttl,
+                    ))
 
         self._send_count += total_sent
         if total_sent:

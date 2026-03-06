@@ -230,5 +230,30 @@ class FlexRadioClient:
             await self.set_mode(slice_num, sdr_mode)
         await self.tune(slice_num, freq_mhz)
 
+    # ------------------------------------------------------------------ #
+    #  Spot injection                                                      #
+    # ------------------------------------------------------------------ #
+
+    async def spot_add(self, callsign: str, freq_mhz: float, mode: str = '',
+                       source: str = 'GTBridge', lifetime_seconds: int = 900,
+                       comment: str = ''):
+        """Add or update a spot on the SmartSDR panadapter/bandmap.
+
+        Duplicate callsign+freq combinations are auto-updated by the radio.
+        """
+        if not self.connected:
+            return
+        # Build the command
+        cmd = f"spot add rx_freq={freq_mhz:.6f} callsign={callsign}"
+        if mode:
+            sdr_mode = _spot_to_sdr_mode(mode, freq_mhz).lower()
+            cmd += f" mode={sdr_mode}"
+        cmd += f" source={source}"
+        cmd += f" lifetime_seconds={lifetime_seconds}"
+        if comment:
+            # Spaces in comment must be encoded as 0x7F (ASCII DEL)
+            cmd += f" comment={comment.replace(' ', chr(0x7f))}"
+        await self._send(cmd)
+
     def stop(self):
         self._close()
