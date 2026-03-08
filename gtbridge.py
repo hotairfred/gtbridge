@@ -54,6 +54,7 @@ DEFAULT_CONFIG = {
     "telnet_server": False,
     "telnet_port": 7300,
     "log_file": "",
+    "trusted_spotters": [],
 }
 
 # Map modes to WSJT-X decode mode character
@@ -111,6 +112,9 @@ class GTBridge:
         self.region = config.get('region', 2)
         self.qrz_skimmer_only = config.get('qrz_skimmer_only', False)
         self.flex_spots = config.get('flex_spots', True)  # inject spots onto SmartSDR panadapter
+        self.trusted_spotters = set(
+            s.upper() for s in config.get('trusted_spotters', [])
+        )
         self._sock = None
         self._telnet = None
         self._qrz = None
@@ -129,6 +133,14 @@ class GTBridge:
         self._cache_lock = asyncio.Lock()
         # Track which (band, mode) combos we've seen (for heartbeats)
         self._active_instances = set()
+
+    def _is_trusted_spotter(self, spotter: str) -> bool:
+        """Check if spotter matches a trusted callsign (ignores -# suffixes)."""
+        spotter = spotter.upper().rstrip('#').rstrip('-')
+        for trusted in self.trusted_spotters:
+            if spotter == trusted or spotter.startswith(trusted + '-'):
+                return True
+        return False
 
     def _instance_client_id(self, band: str, mode: str) -> str:
         """Return the WSJT-X client_id for a band+mode instance."""
@@ -283,6 +295,8 @@ class GTBridge:
 
                 snr = spot.snr if spot.snr is not None else -10
                 if spot.mode in ('FT8', 'FT4'):
+                    snr = -99
+                elif self.trusted_spotters and not self._is_trusted_spotter(spot.spotter):
                     snr = -99
                 mode_char = MODE_CHAR.get(spot.mode, '~') if spot.mode else '~'
                 audio_freq = spot.freq_hz
@@ -514,6 +528,9 @@ class GTBridge:
             log.info("Mode filter: %s", ', '.join(self.mode_filter))
         if self.band_filter:
             log.info("Band filter: %s", ', '.join(self.band_filter))
+        if self.trusted_spotters:
+            log.info("Trusted spotters: %s (others get SNR -99)",
+                     ', '.join(sorted(self.trusted_spotters)))
 
         # Start telnet server if enabled
         if self.config.get('telnet_server', False):

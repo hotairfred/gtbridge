@@ -108,6 +108,7 @@ Edit `gtbridge.json`:
 | `flex_spots` | Inject cluster/POTA/SOTA spots onto SmartSDR panadapter | `true` |
 | `n1mm_listen` | Enable N1MM-compatible QSO logging listener | `false` |
 | `n1mm_port` | UDP port for N1MM-compatible QSO broadcasts | `12060` |
+| `trusted_spotters` | List of spotter callsigns that get real SNR values (others get -99) | `[]` (disabled) |
 | `log_file` | Path to log file (in addition to console output) | `""` (disabled) |
 
 ### ITU Regions
@@ -361,7 +362,8 @@ GridTracker calculates azimuth bearings automatically from your grid to each spo
 
 - `secrets.json` and `qrz_cache.json` are excluded from git via `.gitignore`
 - The grid is truncated to 4 characters in the WSJT-X decode message to match the FT8 message format that GridTracker expects
-- FT8/FT4 cluster spots are sent with an SNR of -99 dB so that real WSJT-X decodes always take priority in GridTracker's call roster. Without this, cluster spots could override the live decode and prevent the station from appearing as a clickable contact. CW, SSB, and RTTY spots retain their actual skimmer dB values.
+- FT8/FT4 cluster spots are always sent with an SNR of -99 dB so that real WSJT-X decodes take priority in GridTracker's call roster
+- When `trusted_spotters` is configured, only spots from those callsigns retain their real SNR values — all other cluster spots get -99 dB, so local/trusted decodes always take priority. Spotter matching is prefix-based: adding `"WF8Z"` trusts `WF8Z`, `WF8Z-2`, `WF8Z-2-#`, etc. When the list is empty (default), all CW/SSB/RTTY spots keep their real SNR.
 - The QRZ module uses only Python stdlib (`urllib.request`) — no additional dependencies
 
 ## POTA (Parks on the Air) Spots
