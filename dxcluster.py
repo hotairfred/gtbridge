@@ -109,6 +109,9 @@ def parse_spot(line: str) -> Optional[DXSpot]:
 # Standard FT8 dial frequencies (kHz) — signals occupy dial to dial+3 kHz
 _FT8_DIAL = [1840, 3573, 5357, 7074, 10136, 14074, 18100, 21074, 24915, 28074, 50313]
 
+# DXpedition F/H FT8 frequencies (kHz) — used by rare DX (3Y0K, etc.)
+_FT8_DX_DIAL = [1840, 3567, 7090, 10131, 14090, 18095, 21090, 24911, 28090]
+
 # Standard FT4 dial frequencies (kHz) — signals occupy dial to dial+3 kHz
 _FT4_DIAL = [3575.5, 7047.5, 10140, 14080, 18104, 21140, 24919, 28180, 50318]
 
@@ -263,6 +266,10 @@ def infer_mode(freq_khz: float, region: int = 2) -> Optional[str]:
             return 'FT4'
     # Check FT8 windows
     for dial in _FT8_DIAL:
+        if dial <= freq_khz <= dial + _DIGI_BW:
+            return 'FT8'
+    # Check DXpedition F/H FT8 windows
+    for dial in _FT8_DX_DIAL:
         if dial <= freq_khz <= dial + _DIGI_BW:
             return 'FT8'
     # Fall through to band plan for CW/SSB

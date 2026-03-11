@@ -1,0 +1,15 @@
+# Large binaries - keep on share only, don't push to GitHub
+*.zip
+*.msi
+*.exe
+*.dll
+red-pitaya-*.zip
+cwsl_master.zip
+IPP70.zip
+vc_redist.x64.exe
+# Batwing files (Motorola CPS stuff)
+from_batwing_*
+batwing-*
+grayline-*
+# IP scan dumps
+ipscan*.txt
