@@ -123,6 +123,7 @@ class GTBridge:
         self._sota = None
         self._n1mm_sock = None
         self._cluster_clients = []
+        self._cluster_mode_exclude = {}  # per-cluster mode exclusions
         self._spot_count = 0
         self._send_count = 0  # total UDP decode packets sent (including resends)
         # Spot cache: keyed by (band, dx_call) -> {spot, cluster_name, first_seen, last_updated}
@@ -158,6 +159,11 @@ class GTBridge:
         # Infer mode from frequency band plan if not tagged
         if not spot.mode:
             spot.mode = dxcluster.infer_mode(spot.freq_khz, self.region)
+
+        # Per-cluster mode exclusion
+        if cluster_name in self._cluster_mode_exclude:
+            if spot.mode and spot.mode.upper() in self._cluster_mode_exclude[cluster_name]:
+                return
 
         # Apply mode filter
         if self.mode_filter and (not spot.mode or spot.mode.upper() not in self.mode_filter):
@@ -629,8 +635,18 @@ class GTBridge:
             )
             self._cluster_clients.append(client)
             tasks.append(asyncio.create_task(client.connect()))
-            log.info("Cluster: %s (%s:%d)",
-                     client.name, cluster_cfg['host'], cluster_cfg.get('port', 7300))
+            # Per-cluster mode exclusions
+            mode_exclude = cluster_cfg.get('mode_exclude', [])
+            if mode_exclude:
+                self._cluster_mode_exclude[client.name] = set(
+                    m.upper() for m in mode_exclude
+                )
+                log.info("Cluster: %s (%s:%d) excluding modes: %s",
+                         client.name, cluster_cfg['host'], cluster_cfg.get('port', 7300),
+                         ', '.join(mode_exclude))
+            else:
+                log.info("Cluster: %s (%s:%d)",
+                         client.name, cluster_cfg['host'], cluster_cfg.get('port', 7300))
 
         log.info("Bridge running. Press Ctrl+C to stop.")
 

@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 # DX de <spotter>:  <freq>  <dx_call>  <comment>  <time>Z
 SPOT_RE = re.compile(
     r'^DX\s+de\s+'
-    r'(?P<spotter>[A-Z0-9/\-#]+):\s+'
+    r'(?P<spotter>[A-Z0-9/\-#]+):\s*'
     r'(?P<freq>[\d.]+)\s+'
     r'(?P<dx_call>[A-Z0-9/]+)\s+'
     r'(?P<comment>.*?)\s+'

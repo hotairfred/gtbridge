@@ -1,0 +1,21 @@
+{
+  "callsign": "WF8Z",
+  "grid": "EM79sm",
+  "region": 2,
+  "upstream": {
+    "host": "dxc.ve7cc.net",
+    "port": 23
+  },
+  "output_port": 7301,
+  "cty_dat": "cty.dat",
+  "exclude_modes": ["FT8", "FT4"],
+  "exclude_continents": [],
+  "include_continents": [],
+  "include_cq_zones": [3, 4, 5],
+  "exclude_cq_zones": [],
+  "day_suppress_bands": ["160m", "80m"],
+  "night_suppress_bands": ["6m"],
+  "sunrise_utc_hour": 12,
+  "sunset_utc_hour": 0,
+  "log_level": "INFO"
+}
