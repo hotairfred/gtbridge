@@ -48,6 +48,10 @@ SNR_RE = re.compile(r'([+-]?\d{1,3})\s*dB', re.I)
 # Try to extract grid square from comment
 GRID_RE = re.compile(r'\b([A-R]{2}\d{2}(?:[a-x]{2})?)\b')
 
+# Try to extract audio offset from Aggregator FT8 spots (last number in comment, 100-3500 Hz range)
+# Format: "-6 dB   6 FT8          2171" — the 2171 is the audio offset
+OFFSET_RE = re.compile(r'\b(\d{3,4})\s*$')
+
 
 @dataclass
 class DXSpot:
@@ -60,6 +64,7 @@ class DXSpot:
     mode: Optional[str] = None
     snr: Optional[int] = None
     grid: Optional[str] = None
+    audio_offset: int = 0  # Hz offset from dial for FT8/FT4
 
     @property
     def freq_hz(self) -> int:
@@ -94,23 +99,37 @@ def parse_spot(line: str) -> Optional[DXSpot]:
     if grid_match:
         grid = grid_match.group(1)
 
+    # Extract audio offset from Aggregator FT8 spots (Hz, 100-3500 range)
+    freq_khz = float(m.group('freq'))
+    audio_offset = 0
+    if mode in ('FT8', 'FT4'):
+        offset_match = OFFSET_RE.search(comment)
+        if offset_match:
+            offset_hz = int(offset_match.group(1))
+            if 100 <= offset_hz <= 3500:
+                audio_offset = offset_hz
+
     return DXSpot(
         spotter=m.group('spotter').upper(),
-        freq_khz=float(m.group('freq')),
+        freq_khz=freq_khz,
         dx_call=m.group('dx_call').upper(),
         comment=comment,
         time_utc=m.group('time'),
         mode=mode,
         snr=snr,
         grid=grid,
+        audio_offset=audio_offset,
     )
 
 
 # Standard FT8 dial frequencies (kHz) — signals occupy dial to dial+3 kHz
 _FT8_DIAL = [1840, 3573, 5357, 7074, 10136, 14074, 18100, 21074, 24915, 28074, 50313]
 
-# DXpedition F/H FT8 frequencies (kHz) — used by rare DX (3Y0K, etc.)
-_FT8_DX_DIAL = [1840, 3567, 7090, 10131, 14090, 18095, 21090, 24911, 28090]
+# DXpedition F/H FT8 frequencies (kHz) — used by rare DX
+# 3Y0K Bouvet: 3567, 7090, 10131, 14090, 18095, 21090, 24911, 28090
+# CY0S Sable:  1836, 3567, 5357, 7056, 10131, 14091, 18091, 21091, 24911, 28091
+_FT8_DX_DIAL = [1836, 1840, 3567, 5357, 7056, 7090, 10131, 14090, 14091,
+                18091, 18095, 21090, 21091, 24911, 28090, 28091]
 
 # Standard FT4 dial frequencies (kHz) — signals occupy dial to dial+3 kHz
 _FT4_DIAL = [3575.5, 7047.5, 10140, 14080, 18104, 21140, 24919, 28180, 50318]

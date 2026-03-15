@@ -303,7 +303,7 @@ class GTBridge:
                 if self.trusted_spotters and not self._is_trusted_spotter(spot.spotter):
                     snr = -99
                 mode_char = MODE_CHAR.get(spot.mode, '~') if spot.mode else '~'
-                audio_freq = spot.freq_hz
+                audio_freq = spot.audio_offset if spot.audio_offset else spot.freq_hz
 
                 self._send_udp(wsjtx_udp.decode(
                     client_id=cid, is_new=True, time_ms=time_ms,

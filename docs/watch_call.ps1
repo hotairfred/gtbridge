@@ -86,7 +86,8 @@ while (-not $proc.HasExited) {
 
         # Send to all connected clients with ANSI color highlight
         # Red background, white bold text
-        $alert = "`e[1;37;41m>>> $line <<<`e[0m"
+        $esc = [char]27
+        $alert = "${esc}[1;37;41m>>> $line <<<${esc}[0m"
         $deadClients = @()
 
         for ($i = 0; $i -lt $clients.Count; $i++) {
