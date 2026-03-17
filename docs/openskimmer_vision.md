@@ -149,8 +149,11 @@ ML training resources:
 - **BREAKTHROUGH: Multi-pass brute force decoding**
   - 3 decoder tunings × 12 bandwidths × 3 inputs × 3 thresholds = 324 passes
   - Merge all raw output through master.scp validation
-  - Results: 80 validated calls vs CW Skimmer's 108 (74% of CW Skimmer total output!)
-  - Found 52 calls CW Skimmer missed entirely
+  - Results: **107 validated calls vs CW Skimmer's 108** (99% match!)
+  - Found **60 calls CW Skimmer missed entirely**
+  - 47 calls matching CW Skimmer's output
+  - Critical discovery: 33 of CW Skimmer's 108 calls were missing from MASTER.SCP
+  - The decoder quality was never the bottleneck — the database was
   - Approach: brute force with smart filtering beats elegant single-pass decoding
   - Automated runner: `run_multipass.sh`
 - Still needed: HPSDR Protocol 1 input for live operation, DX cluster output
