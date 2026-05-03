@@ -4,6 +4,21 @@ GTBridge connects to DX cluster telnet servers (including SDC-Connectors) and fe
 
 If you use GridTracker 2 and want to see DX cluster spots in the call roster without running WSJT-X, this is for you.
 
+## Caveat: FlexRadio + SmartSDR users on the same machine
+
+If you run **GridTracker 2 and SmartSDR on the same Windows machine**, do not point GTBridge's UDP feed at it under high spot volume.
+
+GTBridge's WSJT-X UDP feed and (with `flex_spots: true`) its panadapter spot injection over TCP 4992 both generate interrupt load on the receiving machine. SmartSDR's DAX v1 audio path is sensitive to DPC latency — when interrupt load is high (for example, when GTBridge is fed from a busy aggregator like RBN/PSKReporter and emits hundreds of spots per cycle), SmartSDR audio can underrun and produce dropouts and pops. SmartSDR 4.2.18's DAX v2 architecture mitigates this, but DAX v1 (4.1.x and earlier) does not.
+
+For Flex-on-same-machine setups, the workarounds are:
+
+- Set `"flex_spots": false` in `gtbridge.json` to disable the per-spot Flex panadapter inject (TCP 4992 load).
+- Run GridTracker 2 on a different machine than SmartSDR (separate the audio-critical box from the UDP-receiving box).
+- Filter aggressively at the cluster layer (e.g. limit by band, mode, continent, or trusted spotters) so cycle volume stays modest.
+- Use a low-volume cluster source (a single skimmer or a curated cluster, rather than an aggregator that combines RBN + PSKReporter + others).
+
+Non-Flex setups (HRD, IC-7300, HL2, Anan with non-DPC-sensitive clients, etc.) are not affected — there is no audio-critical app on the receiving machine for the UDP load to disrupt.
+
 ## Features
 
 - Connects to one or more DX cluster servers via telnet

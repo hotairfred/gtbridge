@@ -15,6 +15,7 @@ Usage:
 import argparse
 import asyncio
 import base64
+import csv
 import json
 import logging
 import os
@@ -54,6 +55,7 @@ DEFAULT_CONFIG = {
     "telnet_server": False,
     "telnet_port": 7300,
     "log_file": "",
+    "spot_log_file": "",
     "trusted_spotters": [],
 }
 
@@ -124,6 +126,7 @@ class GTBridge:
         self._n1mm_sock = None
         self._cluster_clients = []
         self._cluster_mode_exclude = {}  # per-cluster mode exclusions
+        self._spot_log_file = config.get('spot_log_file', '')
         self._spot_count = 0
         self._send_count = 0  # total UDP decode packets sent (including resends)
         # Spot cache: keyed by (band, dx_call) -> {spot, cluster_name, first_seen, last_updated}
@@ -159,6 +162,16 @@ class GTBridge:
         # Infer mode from frequency band plan if not tagged
         if not spot.mode:
             spot.mode = dxcluster.infer_mode(spot.freq_khz, self.region)
+
+        # Dedup: skip if identical spot (same call + freq) seen within last 5s
+        dedup_key = (spot.dx_call, round(spot.freq_khz, 1))
+        now_dedup = time.time()
+        if hasattr(self, '_dedup_cache'):
+            if dedup_key in self._dedup_cache and now_dedup - self._dedup_cache[dedup_key] < 5:
+                return
+        else:
+            self._dedup_cache = {}
+        self._dedup_cache[dedup_key] = now_dedup
 
         # Per-cluster mode exclusion
         if cluster_name in self._cluster_mode_exclude:
@@ -219,6 +232,20 @@ class GTBridge:
                 self._spot_count += 1
                 log.info("[%s] New: %s  %.1f kHz  %s  [%s]  by %s",
                          cluster_name, spot.dx_call, spot.freq_khz, spot.mode or '??', band, spot.spotter)
+                if self._spot_log_file:
+                    try:
+                        with open(self._spot_log_file, 'a', newline='') as f:
+                            csv.writer(f).writerow([
+                                time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(now)),
+                                spot.dx_call,
+                                f'{spot.freq_khz:.1f}',
+                                spot.mode or '',
+                                band,
+                                spot.spotter or '',
+                                cluster_name,
+                            ])
+                    except OSError as e:
+                        log.warning("spot_log_file write error: %s", e)
 
             # Broadcast to telnet clients in real time
             if self._telnet:
@@ -301,9 +328,9 @@ class GTBridge:
 
                 snr = spot.snr if spot.snr is not None else -10
                 if self.trusted_spotters and not self._is_trusted_spotter(spot.spotter):
-                    snr = -99
+                    continue
                 mode_char = MODE_CHAR.get(spot.mode, '~') if spot.mode else '~'
-                audio_freq = spot.audio_offset if spot.audio_offset else spot.freq_hz
+                audio_freq = spot.freq_hz
 
                 self._send_udp(wsjtx_udp.decode(
                     client_id=cid, is_new=True, time_ms=time_ms,
