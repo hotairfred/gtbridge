@@ -59,7 +59,7 @@ HermesIntf
 
 ## Red Pitaya Startup
 ```bash
-ssh root@192.168.1.54  # password: root
+ssh root@192.168.1.54  # password: changeme
 cd /root && ./start.sh
 ```
 start.sh runs `sdr_receiver_hpsdr` with 8 receivers.

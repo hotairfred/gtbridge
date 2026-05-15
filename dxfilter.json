@@ -8,7 +8,7 @@
   },
   "output_port": 7301,
   "cty_dat": "cty.dat",
-  "exclude_modes": ["FT8", "FT4"],
+  "exclude_modes": ["FT8", "FT4", "SSB"],
   "exclude_continents": [],
   "include_continents": [],
   "include_cq_zones": [3, 4, 5],

@@ -588,6 +588,10 @@ GTBridge works with SDC-Connectors' built-in telnet DX cluster server. SDC aggre
 
 See `SDC_TELNET_ISSUES.txt` for known compatibility notes about SDC's telnet server.
 
+## Development
+
+GTBridge is developed using Claude Code as the primary development tool. Contributors are encouraged to use Claude Code for consistency.
+
 ## License
 
 MIT License. Do whatever you want with it — just keep the copyright notice. See [LICENSE](LICENSE) for details. 73!

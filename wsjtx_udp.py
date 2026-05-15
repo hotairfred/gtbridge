@@ -197,6 +197,30 @@ def qso_logged(client_id="GTBRIDGE", dx_call="", dx_grid="", freq_hz=0,
     return buf
 
 
+def reply(client_id="GRAYLINE", time_ms=0, snr=-15, delta_time=0.0,
+          delta_freq=1500, mode="~", message="GRAYLINE-CLICK",
+          low_confidence=False, modifiers=0):
+    """Encode a Reply message (type 4).
+
+    Sent back TO a running WSJT-X instance to ask it to tune its decoder
+    to a specific signal. WSJT-X matches time_ms + snr + mode + delta_freq
+    against its recent decode list to find the signal we mean, and centers
+    the cursor on it (auto-reply if enabled in WSJT-X settings).
+
+    For Grayline click-to-tune: pass current_time_ms() and the audio-offset
+    Hz in delta_freq. WSJT-X tolerates approximate matches on snr/delta_time.
+    """
+    body = (_encode_quint32(time_ms)
+            + _encode_qint32(snr)
+            + _encode_double(delta_time)
+            + _encode_quint32(delta_freq)
+            + _encode_utf8_string(mode)
+            + _encode_utf8_string(message)
+            + _encode_bool(low_confidence)
+            + _encode_quint8(modifiers))
+    return _header(4, client_id) + body
+
+
 def current_time_ms():
     """Return milliseconds since midnight UTC (for decode time field)."""
     now = time.gmtime()
@@ -235,6 +259,44 @@ def _decode_bool(data, offset):
 
 def _decode_double(data, offset):
     return struct.unpack_from('>d', data, offset)[0], offset + 8
+
+
+def _decode_quint64(data, offset):
+    return struct.unpack_from('>Q', data, offset)[0], offset + 8
+
+
+def _decode_qint64(data, offset):
+    return struct.unpack_from('>q', data, offset)[0], offset + 8
+
+
+def _decode_qdatetime(data, offset):
+    """Decode QDataStream QDateTime: qint64 jdn + qint32 ms + qint8 spec.
+    Returns ((year, month, day, hour, minute, second), new_offset).
+    Inverts the formula used by _encode_qdatetime.
+    """
+    jdn = struct.unpack_from('>q', data, offset)[0]
+    offset += 8
+    ms_of_day = struct.unpack_from('>i', data, offset)[0]
+    offset += 4
+    _spec = struct.unpack_from('>b', data, offset)[0]  # 1 = UTC; we don't branch on it
+    offset += 1
+    # JDN → calendar date (Gregorian, valid from 1 March 4801 BC onward, plenty for ham radio)
+    a = jdn + 32044
+    b = (4 * a + 3) // 146097
+    c = a - (146097 * b) // 4
+    d = (4 * c + 3) // 1461
+    e = c - (1461 * d) // 4
+    mm = (5 * e + 2) // 153
+    day = e - (153 * mm + 2) // 5 + 1
+    month = mm + 3 - 12 * (mm // 10)
+    year = 100 * b + d - 4800 + (mm // 10)
+    # ms-of-day → h:m:s
+    if ms_of_day < 0:
+        ms_of_day = 0
+    hour, rem = divmod(ms_of_day, 3600 * 1000)
+    minute, rem = divmod(rem, 60 * 1000)
+    second = rem // 1000
+    return (year, month, day, hour, minute, second), offset
 
 
 def parse_header(data):
@@ -285,3 +347,164 @@ def parse_reply(data):
         'low_confidence': low_confidence,
         'modifiers': modifiers,
     }
+
+
+def parse_status(data):
+    """Parse a Status message (type 1) broadcast by WSJT-X.
+
+    Returns a dict with the fields present (older WSJT-X versions truncate
+    after various points). Always returns at least client_id, dial_freq_hz,
+    mode if the magic + header parsed cleanly. None on header error.
+
+    Used by Grayline to track WSJT-X's current dial frequency so click-to-tune
+    can compute the audio offset for a given RF frequency.
+    """
+    hdr = parse_header(data)
+    if hdr is None or hdr[0] != 1:
+        return None
+    _, client_id, off = hdr
+    out = {'client_id': client_id}
+    try:
+        out['dial_freq_hz'], off = _decode_quint64(data, off)
+        out['mode'], off = _decode_utf8_string(data, off)
+        out['dx_call'], off = _decode_utf8_string(data, off)
+        out['report'], off = _decode_utf8_string(data, off)
+        out['tx_mode'], off = _decode_utf8_string(data, off)
+        out['tx_enabled'], off = _decode_bool(data, off)
+        out['transmitting'], off = _decode_bool(data, off)
+        out['decoding'], off = _decode_bool(data, off)
+        out['rx_df'], off = _decode_qint32(data, off)
+        out['tx_df'], off = _decode_qint32(data, off)
+        out['de_call'], off = _decode_utf8_string(data, off)
+        out['de_grid'], off = _decode_utf8_string(data, off)
+        out['dx_grid'], off = _decode_utf8_string(data, off)
+        out['tx_watchdog'], off = _decode_bool(data, off)
+        out['sub_mode'], off = _decode_utf8_string(data, off)
+        out['fast_mode'], off = _decode_bool(data, off)
+        out['special_op_mode'], off = _decode_quint8(data, off)
+        out['frequency_tolerance'], off = _decode_quint32(data, off)
+        out['tr_period'], off = _decode_quint32(data, off)
+        out['config_name'], off = _decode_utf8_string(data, off)
+        out['tx_message'], off = _decode_utf8_string(data, off)
+    except (struct.error, IndexError):
+        # WSJT-X versions older than 2.4 truncate after various fields.
+        # Return what we got — dial_freq + mode are the load-bearing fields.
+        pass
+    return out
+
+
+def parse_decode(data):
+    """Parse a Decode message (type 2) broadcast by WSJT-X for each decoded signal.
+
+    Returns a dict with: client_id, is_new, time_ms, snr, delta_time, delta_freq,
+    mode (the WSJT-X mode glyph like '~' for FT8), message (the decoded payload
+    string like 'CQ N4DWD EM86'), low_confidence, off_air. Or None on error.
+
+    Caller is responsible for parsing the message text into spotted-call + grid
+    if it wants to ingest the decode as a spot.
+    """
+    hdr = parse_header(data)
+    if hdr is None or hdr[0] != 2:
+        return None
+    _, client_id, off = hdr
+    try:
+        is_new, off = _decode_bool(data, off)
+        time_ms, off = _decode_qint32(data, off)
+        snr, off = _decode_qint32(data, off)
+        delta_time, off = _decode_double(data, off)
+        delta_freq, off = _decode_quint32(data, off)
+        mode, off = _decode_utf8_string(data, off)
+        message, off = _decode_utf8_string(data, off)
+        low_confidence, off = _decode_bool(data, off)
+        off_air, off = _decode_bool(data, off)
+    except (struct.error, IndexError):
+        return None
+    return {
+        'client_id': client_id,
+        'is_new': is_new,
+        'time_ms': time_ms,
+        'snr': snr,
+        'delta_time': delta_time,
+        'delta_freq': delta_freq,
+        'mode': mode,
+        'message': message,
+        'low_confidence': low_confidence,
+        'off_air': off_air,
+    }
+
+
+# Message type constants — see WSJT-X NetworkMessage.hpp
+MSG_HEARTBEAT = 0
+MSG_STATUS = 1
+MSG_DECODE = 2
+MSG_CLEAR = 3
+MSG_REPLY = 4
+MSG_QSO_LOGGED = 5
+MSG_CLOSE = 6
+
+
+def parse_qso_logged(data):
+    """Parse a QSO Logged message (type 5) broadcast by WSJT-X when the operator
+    clicks 'Log QSO' (or auto-log on RR73 in some setups).
+
+    Returns dict with the load-bearing fields:
+      client_id, dx_call, dx_grid, freq_hz, mode, report_sent, report_rcvd,
+      tx_power, comments, name, operator_call, my_call, my_grid,
+      exchange_sent, exchange_rcvd, adif_prop_mode,
+      date_off, time_off, date_on, time_on (each as 'YYYYMMDD' / 'HHMMSS' strings
+      ready to drop into ADIF).
+
+    Falls back gracefully on truncated older-version messages — returns whatever
+    decoded cleanly up to the failure point.
+    """
+    hdr = parse_header(data)
+    if hdr is None or hdr[0] != 5:
+        return None
+    _, client_id, off = hdr
+    out = {'client_id': client_id}
+    try:
+        dt_off, off = _decode_qdatetime(data, off)
+        out['date_off'] = '{:04d}{:02d}{:02d}'.format(dt_off[0], dt_off[1], dt_off[2])
+        out['time_off'] = '{:02d}{:02d}{:02d}'.format(dt_off[3], dt_off[4], dt_off[5])
+        out['dx_call'], off = _decode_utf8_string(data, off)
+        out['dx_grid'], off = _decode_utf8_string(data, off)
+        out['freq_hz'], off = _decode_quint64(data, off)
+        out['mode'], off = _decode_utf8_string(data, off)
+        out['report_sent'], off = _decode_utf8_string(data, off)
+        out['report_rcvd'], off = _decode_utf8_string(data, off)
+        out['tx_power'], off = _decode_utf8_string(data, off)
+        out['comments'], off = _decode_utf8_string(data, off)
+        out['name'], off = _decode_utf8_string(data, off)
+        dt_on, off = _decode_qdatetime(data, off)
+        out['date_on'] = '{:04d}{:02d}{:02d}'.format(dt_on[0], dt_on[1], dt_on[2])
+        out['time_on'] = '{:02d}{:02d}{:02d}'.format(dt_on[3], dt_on[4], dt_on[5])
+        out['operator_call'], off = _decode_utf8_string(data, off)
+        out['my_call'], off = _decode_utf8_string(data, off)
+        out['my_grid'], off = _decode_utf8_string(data, off)
+        out['exchange_sent'], off = _decode_utf8_string(data, off)
+        out['exchange_rcvd'], off = _decode_utf8_string(data, off)
+        out['adif_prop_mode'], off = _decode_utf8_string(data, off)
+    except (struct.error, IndexError):
+        pass  # truncated — return what we got
+    return out
+
+
+def parse_message(data):
+    """Generic dispatcher — peek at message type and route to the appropriate parser.
+
+    Returns (msg_type, parsed_dict_or_None). Unknown message types return
+    (msg_type, None) so the caller can log/skip. Bad headers return (None, None).
+    """
+    hdr = parse_header(data)
+    if hdr is None:
+        return None, None
+    msg_type = hdr[0]
+    if msg_type == MSG_STATUS:
+        return msg_type, parse_status(data)
+    if msg_type == MSG_DECODE:
+        return msg_type, parse_decode(data)
+    if msg_type == MSG_REPLY:
+        return msg_type, parse_reply(data)
+    if msg_type == MSG_QSO_LOGGED:
+        return msg_type, parse_qso_logged(data)
+    return msg_type, None
